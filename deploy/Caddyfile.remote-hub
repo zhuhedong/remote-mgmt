@@ -1,0 +1,17 @@
+# --- remote-hub (managed by deploy.sh; do not edit between markers) ---
+remote.zhuhedong.cn {
+	encode zstd gzip
+	reverse_proxy {$REMOTE_HUB_UPSTREAM:127.0.0.1:9440} {
+		flush_interval -1
+	}
+}
+
+*.d.remote.zhuhedong.cn {
+	tls {
+		on_demand
+	}
+	reverse_proxy {$REMOTE_HUB_UPSTREAM:127.0.0.1:9440} {
+		flush_interval -1
+	}
+}
+# --- end remote-hub ---

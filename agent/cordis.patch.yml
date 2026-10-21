@@ -1,0 +1,7 @@
+- id: remote-agent
+  name: dsh-remote-agent
+  config:
+    hub: "https://remote.zhuhedong.cn"
+    autoConnect: true
+    proxy: "system"
+    manageTrustedHosts: true

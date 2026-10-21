@@ -1,0 +1,31 @@
+[Unit]
+Description=DSH Remote hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=remotehub
+Group=remotehub
+EnvironmentFile=-/opt/remote-hub/hub.env
+ExecStart=/opt/remote-hub/bin/remote-hub -data /opt/remote-hub/data
+Restart=always
+RestartSec=3
+# hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryMax=200M
+ReadWritePaths=/opt/remote-hub/data
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
