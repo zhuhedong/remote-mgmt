@@ -56,7 +56,7 @@ log "backup in $BK"
 
 rollback() {
   log "ROLLBACK"
-  cp -a "$BK/Caddyfile" "$CADDYFILE" || true
+  cat "$BK/Caddyfile" > "$CADDYFILE" || true
   caddy_cmd reload --config "$CADDY_IN_CTR_FILE" --adapter caddyfile >/dev/null 2>&1 || true
   if [ -f "$BK/remote-hub.prev" ]; then cp -a "$BK/remote-hub.prev" "$ROOT/bin/remote-hub"; systemctl restart remote-hub || true
   else systemctl stop remote-hub 2>/dev/null || true; fi
@@ -75,7 +75,7 @@ if [ ! -f "$ROOT/hub.env" ]; then
 fi
 run install -m 0644 "$HERE/remote-hub.service" /etc/systemd/system/remote-hub.service
 run systemctl daemon-reload
-run systemctl enable remote-hub >/dev/null
+run systemctl enable remote-hub
 run systemctl restart remote-hub
 if [ "$DRY" = 0 ]; then
   for i in $(seq 1 20); do curl -fsS -H 'Host: remote.zhuhedong.cn' "http://$BIND:9440/healthz" >/dev/null 2>&1 && break; sleep 0.5; [ "$i" = 20 ] && { echo "hub health check failed"; journalctl -u remote-hub -n 30 --no-pager; false; }; done
@@ -100,10 +100,17 @@ else:
     src = "{\n" + ask + "}\n\n" + src
 print(src.rstrip("\n") + "\n\n" + snip, end="")
 PY
-if [ "$DRY" = 1 ]; then log "dry-run: proposed Caddyfile diff:"; diff -u "$CADDYFILE" "$NEW" || true; rm -f "$NEW"; exit 0; fi
-cp "$NEW" "$CADDYFILE"; rm -f "$NEW"
-caddy_cmd validate --config "$CADDY_IN_CTR_FILE" --adapter caddyfile
+# validate the candidate BEFORE touching the live file (stdin works for host and docker caddy)
+validate_candidate() { if [ "$CADDY_MODE" = docker ]; then docker exec -i "$CADDY_CTR" caddy validate --config /dev/stdin --adapter caddyfile < "$NEW"; else caddy validate --config /dev/stdin --adapter caddyfile < "$NEW"; fi; }
+if [ "$DRY" = 1 ]; then
+  log "dry-run: proposed Caddyfile diff:"; diff -u "$CADDYFILE" "$NEW" || true
+  if validate_candidate >/tmp/remote-hub-validate.log 2>&1; then log "dry-run: candidate Caddyfile is VALID"; else log "dry-run: candidate Caddyfile INVALID:"; tail -5 /tmp/remote-hub-validate.log; fi
+  rm -f "$NEW"; exit 0
+fi
+validate_candidate >/dev/null
+# write in place (keeps the inode: the Caddyfile is a single-file bind mount)
+cat "$NEW" > "$CADDYFILE"; rm -f "$NEW"
 caddy_cmd reload --config "$CADDY_IN_CTR_FILE" --adapter caddyfile
 trap - ERR
 log "done. Setup token: run  sudo cat $ROOT/data/setup-token  (shown only on the server; delete after setup is automatic)."
-log "rollback later: cp $BK/Caddyfile $CADDYFILE && caddy reload; systemctl disable --now remote-hub"
+log "rollback later: cat $BK/Caddyfile > $CADDYFILE && docker exec $CADDY_CTR caddy reload --config $CADDY_IN_CTR_FILE --adapter caddyfile; systemctl disable --now remote-hub"
