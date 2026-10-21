@@ -1,7 +1,10 @@
-- id: remote-agent
-  name: dsh-remote-agent
-  config:
-    hub: "https://remote.zhuhedong.cn"
-    autoConnect: true
-    proxy: "system"
-    manageTrustedHosts: true
+# Mounted into the profile as a bundle patch. Override fields in your profile
+# patch with a row of the same id (e.g. `- id: remote-agent` + config).
+- insert:
+    - id: remote-agent
+      name: dsh-remote-agent
+      config:
+        hub: "https://remote.zhuhedong.cn"
+        autoConnect: true
+        proxy: "system"
+        manageTrustedHosts: true
