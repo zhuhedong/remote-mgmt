@@ -162,6 +162,9 @@ func (h *Hub) Routes() http.Handler {
 	api.HandleFunc("POST /api/devices/revoke", h.authed(h.apiDeviceRevoke))
 	api.HandleFunc("POST /api/open", h.authed(h.apiOpen))
 	api.HandleFunc("GET /api/audit", h.authed(h.apiAudit))
+	api.HandleFunc("POST /api/me/password", h.authed(h.apiChangePassword))
+	api.HandleFunc("POST /api/me/totp/begin", h.authed(h.apiTOTPRebindBegin))
+	api.HandleFunc("POST /api/me/totp/finish", h.authed(h.apiTOTPRebindFinish))
 	api.HandleFunc("POST /agent/enroll", h.agentEnroll)
 	api.HandleFunc("GET /agent/connect", h.handleAgentConnect)
 	sub, _ := fs.Sub(webFS, "web")
@@ -304,7 +307,7 @@ func (h *Hub) apiSetupBegin(w http.ResponseWriter, r *http.Request) {
 	h.setup.secret = newTOTPSecret()
 	s := h.setup.secret
 	h.setup.mu.Unlock()
-	jsonOut(w, 200, map[string]string{"secret": s, "uri": "otpauth://totp/DSH%20Remote:owner?secret=" + s + "&issuer=DSH%20Remote"})
+	jsonOut(w, 200, map[string]string{"secret": s, "uri": totpURI("owner", s)})
 }
 
 func (h *Hub) apiSetupFinish(w http.ResponseWriter, r *http.Request) {
@@ -674,7 +677,7 @@ func (h *Hub) loginRedirect(w http.ResponseWriter, r *http.Request) {
 func (h *Hub) serveDevice(w http.ResponseWriter, r *http.Request, host, svc, slug string) {
 	devID, ok := h.deviceBySlug(slug)
 	if !ok || svc != svcDSH {
-		http.Error(w, "unknown device", 404)
+		h.offlinePage(w, 404, "找不到这台设备", "这个地址对应的设备不存在或已被移除。")
 		return
 	}
 	if r.URL.Path == "/__hub/enter" {
@@ -699,9 +702,7 @@ func (h *Hub) serveDevice(w http.ResponseWriter, r *http.Request, host, svc, slu
 	}
 	ag := h.reg.Get(devID)
 	if ag == nil {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(503)
-		w.Write([]byte("<!doctype html><meta charset=utf-8><title>离线</title><p>设备当前离线，请稍后重试。</p>"))
+		h.offlinePage(w, 503, "设备当前离线", "这台 DSH 暂时没有连接到 Hub。请确认电脑已开机、DSH 正在运行；页面会每 20 秒自动重试。")
 		return
 	}
 	h.proxy(ag, svc, host).ServeHTTP(w, r)

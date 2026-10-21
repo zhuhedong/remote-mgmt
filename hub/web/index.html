@@ -1,5 +1,23 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DSH 远程管理</title><link rel="stylesheet" href="/style.css"></head>
-<body><header><b>DSH 远程管理</b><span id="who"></span></header><main id="app">加载中…</main>
-<script src="/app.js"></script></body></html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d1014" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="DSH 远程">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
+<title>DSH 远程管理</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app" class="boot"><div class="spinner" aria-label="加载中"></div></div>
+<div id="toasts" aria-live="polite"></div>
+<noscript><p class="noscript">需要启用 JavaScript 才能使用控制台。</p></noscript>
+<script src="/vendor/qrcode.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

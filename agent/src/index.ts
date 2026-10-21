@@ -83,9 +83,12 @@ export function apply(ctx: any, rawConfig: any) {
     } catch (e: any) { log.warn(`trustedHosts 更新失败: ${e.message}`); }
   };
 
-  const startLink = async () => {
+  let starting: Promise<void> | null = null;
+  const startLink = (): Promise<void> => (starting ??= startLinkOnce().finally(() => { starting = null; }));
+  const startLinkOnce = async () => {
     if (link || !state.deviceId || !state.hub || state.revoked) return;
     const pkcs8 = await (await getStore()).load();
+    if (link || state.revoked) return;
     if (!pkcs8) { log.warn("未找到设备密钥，请重新登记"); return; }
     const { priv } = loadKey(pkcs8);
     link = new HubLink({
@@ -146,7 +149,7 @@ export function apply(ctx: any, rawConfig: any) {
         await startLink();
         return view();
       }
-      case "connect": state.revoked = false; await startLink(); link?.reconnectNow(); return view();
+      case "connect": state.revoked = false; await startLink(); link?.ensureConnected(); return view();
       case "disconnect": stopLink(); return view();
       case "forget": stopLink(); try { await (await getStore()).clear(); } catch {} state = { managedHosts: state.managedHosts, restartNeeded: state.restartNeeded }; saveState(state); return view();
       case "restart.done": state.restartNeeded = false; saveState(state); return view();

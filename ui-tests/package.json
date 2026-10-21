@@ -1,0 +1,1 @@
+{"name":"remote-mgmt-ui-tests","private":true,"type":"module","devDependencies":{"playwright-core":"1.56","ws":"^8.22.0"}}

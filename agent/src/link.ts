@@ -57,6 +57,8 @@ export class HubLink extends EventEmitter {
     this.teardown();
     this.set("stopped");
   }
+  /** Reconnect only if not already online or mid-dial (used by the manual "connect" button). */
+  ensureConnected() { if (this.state !== "online" && this.state !== "connecting") this.reconnectNow(); }
   reconnectNow() { this.attempt = 0; if (this.timer) clearTimeout(this.timer); this.teardown(); this.connect(); }
 
   private teardown() {
@@ -76,21 +78,24 @@ export class HubLink extends EventEmitter {
     this.timer.unref?.();
   }
 
+  private gen = 0;
   private async connect() {
     if (!this.wanted) return;
+    const gen = ++this.gen; // a newer connect() supersedes any dial still resolving its proxy
     this.teardown();
     this.set("connecting");
     const u = new URL("/agent/connect", this.o.hub);
     u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
     let proxy: string | null = null;
     try { proxy = await resolveProxy(this.o.proxy, this.o.hub); } catch {}
+    if (gen !== this.gen || !this.wanted) return;
     const ws = new WebSocket(u, { agent: agentFor(proxy) as any, handshakeTimeout: 15000, perMessageDeflate: false, maxPayload: 8 * 1024 * 1024 });
     this.ws = ws;
     const mux = new MuxSession({ send: (b) => { if (ws.readyState === WebSocket.OPEN) ws.send(b); }, close: () => { try { ws.close(); } catch {} } });
     this.mux = mux;
     let settled = false;
     const fail = (why: string) => {
-      if (this.ws !== ws) return;
+      if (this.ws !== ws) { try { mux.close(); } catch {} try { ws.terminate(); } catch {} return; }
       this.teardown();
       if (this.state === "revoked") return;
       if (!settled) this.lastError = redact(why);
@@ -114,10 +119,12 @@ export class HubLink extends EventEmitter {
     const lines = lineReader(ctrl);
     send(ctrl, { type: "hello", deviceId: this.o.deviceId, versions: this.o.versions });
     const ch = await lines.next(15000);
+    if (this.mux !== mux) throw new Error("superseded");
     if (ch.type !== "challenge") throw new Error("unexpected handshake");
     const msg = `${ch.nonce}|${ch.ts}|${this.o.deviceId}|${PROTO_TAG}`;
     send(ctrl, { type: "auth", sig: signMsg(this.o.key, msg) });
     const w = await lines.next(15000);
+    if (this.mux !== mux) throw new Error("superseded");
     if (w.type === "denied") {
       if (w.reason === "pending") { this.set("pending", "等待在控制台核对指纹并激活"); throw new Error("等待激活"); }
       if (w.reason === "revoked" || /unknown device/.test(String(w.reason))) { this.set("revoked", "设备已在 Hub 移除"); this.emit("revoked"); this.wanted = false; throw new Error("revoked"); }

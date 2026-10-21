@@ -5333,6 +5333,10 @@ var HubLink = class extends EventEmitter2 {
     this.teardown();
     this.set("stopped");
   }
+  /** Reconnect only if not already online or mid-dial (used by the manual "connect" button). */
+  ensureConnected() {
+    if (this.state !== "online" && this.state !== "connecting") this.reconnectNow();
+  }
   reconnectNow() {
     this.attempt = 0;
     if (this.timer) clearTimeout(this.timer);
@@ -5362,8 +5366,10 @@ var HubLink = class extends EventEmitter2 {
     this.timer = setTimeout(() => this.connect(), d);
     this.timer.unref?.();
   }
+  gen = 0;
   async connect() {
     if (!this.wanted) return;
+    const gen = ++this.gen;
     this.teardown();
     this.set("connecting");
     const u = new URL("/agent/connect", this.o.hub);
@@ -5373,6 +5379,7 @@ var HubLink = class extends EventEmitter2 {
       proxy = await resolveProxy(this.o.proxy, this.o.hub);
     } catch {
     }
+    if (gen !== this.gen || !this.wanted) return;
     const ws = new wrapper_default(u, { agent: agentFor(proxy), handshakeTimeout: 15e3, perMessageDeflate: false, maxPayload: 8 * 1024 * 1024 });
     this.ws = ws;
     const mux = new MuxSession({ send: (b) => {
@@ -5386,7 +5393,17 @@ var HubLink = class extends EventEmitter2 {
     this.mux = mux;
     let settled = false;
     const fail = (why) => {
-      if (this.ws !== ws) return;
+      if (this.ws !== ws) {
+        try {
+          mux.close();
+        } catch {
+        }
+        try {
+          ws.terminate();
+        } catch {
+        }
+        return;
+      }
       this.teardown();
       if (this.state === "revoked") return;
       if (!settled) this.lastError = redact(why);
@@ -5411,10 +5428,12 @@ var HubLink = class extends EventEmitter2 {
     const lines = lineReader(ctrl);
     send(ctrl, { type: "hello", deviceId: this.o.deviceId, versions: this.o.versions });
     const ch = await lines.next(15e3);
+    if (this.mux !== mux) throw new Error("superseded");
     if (ch.type !== "challenge") throw new Error("unexpected handshake");
     const msg = `${ch.nonce}|${ch.ts}|${this.o.deviceId}|${PROTO_TAG}`;
     send(ctrl, { type: "auth", sig: signMsg(this.o.key, msg) });
     const w = await lines.next(15e3);
+    if (this.mux !== mux) throw new Error("superseded");
     if (w.type === "denied") {
       if (w.reason === "pending") {
         this.set("pending", "\u7B49\u5F85\u5728\u63A7\u5236\u53F0\u6838\u5BF9\u6307\u7EB9\u5E76\u6FC0\u6D3B");
@@ -5835,9 +5854,14 @@ function apply(ctx, rawConfig) {
       log.warn(`trustedHosts \u66F4\u65B0\u5931\u8D25: ${e.message}`);
     }
   };
-  const startLink = async () => {
+  let starting = null;
+  const startLink = () => starting ??= startLinkOnce().finally(() => {
+    starting = null;
+  });
+  const startLinkOnce = async () => {
     if (link || !state.deviceId || !state.hub || state.revoked) return;
     const pkcs8 = await (await getStore()).load();
+    if (link || state.revoked) return;
     if (!pkcs8) {
       log.warn("\u672A\u627E\u5230\u8BBE\u5907\u5BC6\u94A5\uFF0C\u8BF7\u91CD\u65B0\u767B\u8BB0");
       return;
@@ -5935,7 +5959,7 @@ function apply(ctx, rawConfig) {
       case "connect":
         state.revoked = false;
         await startLink();
-        link?.reconnectNow();
+        link?.ensureConnected();
         return view();
       case "disconnect":
         stopLink();
