@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { HubLink, localSso, metrics } from "./link.js";
+import { BridgeRouter, LogRing } from "./bridge/index.js";
 import { pickStore, newDeviceKey, loadKey, KeyStore } from "./keystore.js";
 import { syncHostsFile } from "./hosts.js";
 import { redact, addSecret } from "./redact.js";
@@ -51,6 +52,9 @@ export function normalizeConfig(raw: any) {
     proxy: String(c.proxy || "system"),
     manageTrustedHosts: c.manageTrustedHosts !== false,
     keyStore: c.keyStore === "file" ? "file" : "auto",
+    remoteRestart: c.remoteRestart === true,
+    allowPluginReload: c.allowPluginReload === true,
+    allowPluginUpdate: c.allowPluginUpdate === true,
   };
 }
 
@@ -64,7 +68,17 @@ export function apply(ctx: any, rawConfig: any) {
   let store: KeyStore | null = null;
   let snap: any = null;
   const recent: { ts: number; text: string }[] = [];
-  const note = (text: string) => { recent.unshift({ ts: Date.now(), text }); recent.length = Math.min(recent.length, 20); };
+  const logRing = new LogRing(500);
+  const note = (text: string) => {
+    const safe = redact(text);
+    recent.unshift({ ts: Date.now(), text: safe });
+    recent.length = Math.min(recent.length, 20);
+    logRing.push(safe, "agent");
+  };
+  // Mirror plugin logger lines into the ring (already redacted by logger()).
+  const _info = log.info.bind(log), _warn = log.warn.bind(log);
+  log.info = (m: string) => { _info(m); try { logRing.push(m, "info"); } catch {} };
+  log.warn = (m: string) => { _warn(m); try { logRing.push(m, "warn"); } catch {} };
 
   const getStore = async () => (store ||= await pickStore(dataDir(), cfg.keyStore === "file" ? "file" : undefined));
 
@@ -91,6 +105,37 @@ export function apply(ctx: any, rawConfig: any) {
     if (link || state.revoked) return;
     if (!pkcs8) { log.warn("未找到设备密钥，请重新登记"); return; }
     const { priv } = loadKey(pkcs8);
+    const bridge = new BridgeRouter({
+      status: () => {
+        const r = metrics(snap); snap = r.snap;
+        return { ...r.m, dshReady: Boolean(local), restartNeeded: Boolean(state.restartNeeded), plugin: VERSION, rtt: link ? link.rtt : null };
+      },
+      enrollment: () => ({
+        hub: state.hub || null,
+        deviceId: state.deviceId || null,
+        name: state.name || cfg.instanceName,
+        slug: state.slug || null,
+        fingerprint: state.fingerprint || null,
+        fingerprintPrefix: state.fingerprint ? String(state.fingerprint).slice(0, 12) : null,
+        state: link ? link.state : (state.deviceId ? "stopped" : "not-enrolled"),
+        lastError: link ? link.lastError : null,
+        since: link ? link.since : null,
+        rtt: link ? link.rtt : null,
+        hosts: state.hosts || (link ? link.hosts : []) || [],
+        keyStore: store ? store.kind : state.keyStore || null,
+        dshReady: Boolean(local),
+        plugin: VERSION,
+      }),
+      logs: { tail: (n) => logRing.tail(n) },
+      local: () => local,
+      linkState: () => (link ? link.state : null),
+      opsPolicy: () => ({
+        remoteRestart: cfg.remoteRestart === true,
+        allowPluginReload: cfg.allowPluginReload === true,
+        allowPluginUpdate: cfg.allowPluginUpdate === true,
+      }),
+      log,
+    });
     link = new HubLink({
       hub: state.hub, deviceId: state.deviceId, key: priv, proxy: cfg.proxy,
       versions: { plugin: VERSION, node: process.versions.node, os: `${process.platform}-${process.arch}` },
@@ -104,6 +149,7 @@ export function apply(ctx: any, rawConfig: any) {
         return r;
       },
       status: () => { const r = metrics(snap); snap = r.snap; return { ...r.m, dshReady: Boolean(local), restartNeeded: Boolean(state.restartNeeded), plugin: VERSION }; },
+      bridge,
       log,
     });
     link.on("welcome", (w: any) => { if (w.slug) { state = { ...state, slug: w.slug }; saveState(state); } syncHosts(link!.hosts); });

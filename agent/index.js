@@ -2269,7 +2269,7 @@ var require_websocket = __commonJS({
     var EventEmitter3 = __require("events");
     var https2 = __require("https");
     var http3 = __require("http");
-    var net2 = __require("net");
+    var net3 = __require("net");
     var tls = __require("tls");
     var { randomBytes: randomBytes2, createHash } = __require("crypto");
     var { Duplex: Duplex2, Readable } = __require("stream");
@@ -3026,12 +3026,12 @@ var require_websocket = __commonJS({
     }
     function netConnect(options) {
       options.path = options.socketPath;
-      return net2.connect(options);
+      return net3.connect(options);
     }
     function tlsConnect(options) {
       options.path = void 0;
       if (!options.servername && options.servername !== "") {
-        options.servername = net2.isIP(options.host) ? "" : options.host;
+        options.servername = net3.isIP(options.host) ? "" : options.host;
       }
       return tls.connect(options);
     }
@@ -4469,7 +4469,7 @@ var require_dist = __commonJS({
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.Agent = void 0;
-    var net2 = __importStar(__require("net"));
+    var net3 = __importStar(__require("net"));
     var http3 = __importStar(__require("http"));
     var https_1 = __require("https");
     __exportStar(require_helpers(), exports);
@@ -4509,7 +4509,7 @@ var require_dist = __commonJS({
         if (!this.sockets[name2]) {
           this.sockets[name2] = [];
         }
-        const fakeSocket = new net2.Socket({ writable: false });
+        const fakeSocket = new net3.Socket({ writable: false });
         this.sockets[name2].push(fakeSocket);
         this.totalSocketCount++;
         return fakeSocket;
@@ -4721,7 +4721,7 @@ var require_dist2 = __commonJS({
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.HttpsProxyAgent = void 0;
-    var net2 = __importStar(__require("net"));
+    var net3 = __importStar(__require("net"));
     var tls = __importStar(__require("tls"));
     var assert_1 = __importDefault(__require("assert"));
     var debug_1 = __importDefault(require_src());
@@ -4730,7 +4730,7 @@ var require_dist2 = __commonJS({
     var parse_proxy_response_1 = require_parse_proxy_response();
     var debug = (0, debug_1.default)("https-proxy-agent");
     var setServernameFromNonIpHost = (options) => {
-      if (options.servername === void 0 && options.host && !net2.isIP(options.host)) {
+      if (options.servername === void 0 && options.host && !net3.isIP(options.host)) {
         return {
           ...options,
           servername: options.host
@@ -4770,10 +4770,10 @@ var require_dist2 = __commonJS({
           socket = tls.connect(setServernameFromNonIpHost(this.connectOpts));
         } else {
           debug("Creating `net.Socket`: %o", this.connectOpts);
-          socket = net2.connect(this.connectOpts);
+          socket = net3.connect(this.connectOpts);
         }
         const headers = typeof this.proxyHeaders === "function" ? this.proxyHeaders() : { ...this.proxyHeaders };
-        const host = net2.isIPv6(opts.host) ? `[${opts.host}]` : opts.host;
+        const host = net3.isIPv6(opts.host) ? `[${opts.host}]` : opts.host;
         let payload = `CONNECT ${host}:${opts.port} HTTP/1.1\r
 `;
         if (proxy.username || proxy.password) {
@@ -4806,7 +4806,7 @@ var require_dist2 = __commonJS({
           return socket;
         }
         socket.destroy();
-        const fakeSocket = new net2.Socket({ writable: false });
+        const fakeSocket = new net3.Socket({ writable: false });
         fakeSocket.readable = true;
         req.once("socket", (s) => {
           debug("Replaying proxy buffer for failed request");
@@ -4843,7 +4843,7 @@ import os2 from "node:os";
 
 // src/link.ts
 import { EventEmitter as EventEmitter2 } from "node:events";
-import net from "node:net";
+import net2 from "node:net";
 import http2 from "node:http";
 import os from "node:os";
 
@@ -5285,6 +5285,498 @@ function postJSON(url, body, agent, timeout = 15e3) {
   });
 }
 
+// src/bridge/types.ts
+var AGENT_CAP_VERSION = 1;
+var emptyObjectParams = {
+  type: "object",
+  properties: {},
+  additionalProperties: false
+};
+
+// src/bridge/catalog.ts
+var L0_CATALOG = [
+  {
+    id: "instance.status",
+    title: "\u5B9E\u4F8B\u72B6\u6001",
+    description: "\u5728\u7EBF\u3001DSH/\u63D2\u4EF6/OS/Node \u7248\u672C\u3001\u5C31\u7EEA\u6001",
+    params: emptyObjectParams,
+    stream: false,
+    permission: "open",
+    sensitive: false,
+    minAgentVersion: "0.1.0",
+    category: "observe"
+  },
+  {
+    id: "instance.metrics",
+    title: "\u5B9E\u65F6\u6307\u6807",
+    description: "CPU / \u5185\u5B58 / \u8D1F\u8F7D / RSS",
+    params: emptyObjectParams,
+    stream: false,
+    permission: "open",
+    sensitive: false,
+    minAgentVersion: "0.1.0",
+    category: "observe"
+  },
+  {
+    id: "instance.enrollment",
+    title: "\u767B\u8BB0\u6458\u8981",
+    description: "\u6307\u7EB9\u524D\u7F00\u3001Hub\u3001\u5EF6\u8FDF\u3001\u8FDE\u63A5\u6001",
+    params: emptyObjectParams,
+    stream: false,
+    permission: "open",
+    sensitive: false,
+    minAgentVersion: "0.1.0",
+    category: "observe"
+  },
+  {
+    id: "instance.logs.tail",
+    title: "\u65E5\u5FD7\u5C3E",
+    description: "\u8131\u654F\u65E5\u5FD7\u5C3E\uFF08\u73AF\u5F62\u7F13\u51B2\uFF09",
+    params: {
+      type: "object",
+      properties: {
+        lines: { type: "integer", minimum: 1, maximum: 500, default: 100 }
+      },
+      additionalProperties: false
+    },
+    stream: false,
+    permission: "manage",
+    sensitive: false,
+    minAgentVersion: "0.1.0",
+    category: "observe"
+  },
+  {
+    id: "services.health",
+    title: "\u672C\u673A\u670D\u52A1\u5065\u5EB7",
+    description: "\u767D\u540D\u5355 loopback \u63A2\u6D3B",
+    params: emptyObjectParams,
+    stream: false,
+    permission: "open",
+    sensitive: false,
+    minAgentVersion: "0.1.0",
+    category: "observe"
+  },
+  {
+    id: "dsh.restart",
+    title: "\u91CD\u542F DSH",
+    description: "\u9700\u672C\u673A\u5141\u8BB8\u8FDC\u7A0B\u91CD\u542F",
+    params: {
+      type: "object",
+      properties: {
+        dryRun: { type: "boolean", default: true },
+        execute: { type: "boolean", default: false }
+      },
+      additionalProperties: false
+    },
+    stream: false,
+    permission: "restart",
+    sensitive: true,
+    minAgentVersion: "0.1.0",
+    category: "operate"
+  },
+  {
+    id: "plugin.reload",
+    title: "\u91CD\u8F7D\u8FDC\u7A0B\u63D2\u4EF6",
+    description: "\u70ED\u91CD\u8F7D dsh-remote-agent\uFF08\u82E5\u8FD0\u884C\u65F6\u652F\u6301\uFF09",
+    params: {
+      type: "object",
+      properties: {
+        dryRun: { type: "boolean", default: true },
+        execute: { type: "boolean", default: false }
+      },
+      additionalProperties: false
+    },
+    stream: false,
+    permission: "restart",
+    sensitive: true,
+    minAgentVersion: "0.1.0",
+    category: "operate"
+  },
+  {
+    id: "plugin.update",
+    title: "\u5347\u7EA7\u8FDC\u7A0B\u63D2\u4EF6",
+    description: "\u9A8C\u7B7E\u540E\u81EA\u5347\u7EA7",
+    params: {
+      type: "object",
+      properties: {
+        dryRun: { type: "boolean", default: true },
+        execute: { type: "boolean", default: false }
+      },
+      additionalProperties: false
+    },
+    stream: false,
+    permission: "update",
+    sensitive: true,
+    minAgentVersion: "0.1.0",
+    category: "operate"
+  }
+];
+function listCapabilities() {
+  return { agentCapVersion: AGENT_CAP_VERSION, capabilities: L0_CATALOG.map((c) => ({ ...c })) };
+}
+function findCapability(id) {
+  return L0_CATALOG.find((c) => c.id === id);
+}
+
+// src/bridge/logs.ts
+var LogRing = class {
+  constructor(max = 500) {
+    this.max = max;
+  }
+  buf = [];
+  push(text2, source = "agent") {
+    const entry = { ts: Date.now(), text: redact(text2), source: String(source || "agent") };
+    this.buf.push(entry);
+    if (this.buf.length > this.max) this.buf.splice(0, this.buf.length - this.max);
+  }
+  tail(n) {
+    const lines = Math.min(500, Math.max(1, Number.isFinite(Number(n)) ? Math.floor(Number(n)) : 100));
+    return this.buf.slice(-lines).map((e) => ({ ...e }));
+  }
+  clear() {
+    this.buf = [];
+  }
+  get size() {
+    return this.buf.length;
+  }
+};
+function clampLogLines(params) {
+  const raw = params && params.lines !== void 0 ? Number(params.lines) : 100;
+  if (!Number.isFinite(raw)) return 100;
+  return Math.min(500, Math.max(1, Math.floor(raw)));
+}
+
+// src/bridge/health.ts
+import net from "node:net";
+function isLoopbackHost(host) {
+  const h = String(host || "").trim().toLowerCase();
+  if (!h || h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "0.0.0.0" || h === "::") return true;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  return false;
+}
+function normalizeProbeHost(host) {
+  const h = String(host || "").trim();
+  if (!h || h === "0.0.0.0" || h === "::") return "127.0.0.1";
+  return h;
+}
+function probeTcp(host, port, timeoutMs = 1500) {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok, error) => {
+      if (settled) return;
+      settled = true;
+      try {
+        sock.destroy();
+      } catch {
+      }
+      resolve({ ok, latencyMs: ok ? Date.now() - start : null, error });
+    };
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+      resolve({ ok: false, latencyMs: null, error: "bad port" });
+      return;
+    }
+    if (!isLoopbackHost(host)) {
+      resolve({ ok: false, latencyMs: null, error: "host not in loopback whitelist" });
+      return;
+    }
+    const target = normalizeProbeHost(host);
+    const sock = net.connect({ host: target, port, family: 4 });
+    sock.setTimeout(timeoutMs);
+    sock.once("connect", () => done(true, null));
+    sock.once("timeout", () => done(false, "timeout"));
+    sock.once("error", (e) => done(false, e && e.message ? e.message : "connect failed"));
+  });
+}
+async function checkServicesHealth(opts) {
+  const services = [];
+  const local = opts.local;
+  if (local && local.port) {
+    if (!isLoopbackHost(local.host)) {
+      services.push({
+        id: "webServer",
+        ok: false,
+        host: local.host,
+        port: local.port,
+        latencyMs: null,
+        error: "refused: webServer host is not loopback"
+      });
+    } else {
+      const r = await probeTcp(local.host, local.port);
+      services.push({
+        id: "webServer",
+        ok: r.ok,
+        host: normalizeProbeHost(local.host),
+        port: local.port,
+        latencyMs: r.latencyMs,
+        error: r.error
+      });
+    }
+  } else {
+    services.push({
+      id: "webServer",
+      ok: false,
+      detail: "not ready",
+      error: "webServer endpoint unknown"
+    });
+  }
+  const st = opts.linkState != null ? String(opts.linkState) : null;
+  if (st != null) {
+    services.push({
+      id: "hubLink",
+      ok: st === "online",
+      detail: st,
+      error: st === "online" ? null : st
+    });
+  }
+  return { checkedAt: Date.now(), services };
+}
+
+// src/bridge/ops.ts
+var DEFAULT_OPS_POLICY = {
+  remoteRestart: false,
+  allowPluginReload: false,
+  allowPluginUpdate: false
+};
+function normalizeOpsPolicy(raw) {
+  const r = raw || {};
+  return {
+    remoteRestart: r.remoteRestart === true,
+    allowPluginReload: r.allowPluginReload === true,
+    allowPluginUpdate: r.allowPluginUpdate === true
+  };
+}
+function wantExecute(params) {
+  return params && (params.execute === true || params.dryRun === false);
+}
+function gateDshRestart(policy, params) {
+  if (!policy.remoteRestart) {
+    return {
+      ok: false,
+      code: "REMOTE_RESTART_DISABLED",
+      message: "remoteRestart is disabled on this agent (set config.remoteRestart=true to allow dry-run/execute path)"
+    };
+  }
+  if (!wantExecute(params)) {
+    return {
+      ok: true,
+      data: {
+        capability: "dsh.restart",
+        dryRun: true,
+        allowed: true,
+        executed: false,
+        message: "dry-run only; pass execute:true to request restart (still stubbed in A0.4)"
+      }
+    };
+  }
+  return {
+    ok: false,
+    code: "STUB",
+    message: "dsh.restart execute is stubbed; real restart not wired yet (A0.4 skeleton)"
+  };
+}
+function gatePluginReload(policy, params) {
+  if (!policy.allowPluginReload) {
+    return {
+      ok: false,
+      code: "RELOAD_DISABLED",
+      message: "plugin.reload disabled (config.allowPluginReload=true to enable gate)"
+    };
+  }
+  if (!wantExecute(params)) {
+    return {
+      ok: true,
+      data: {
+        capability: "plugin.reload",
+        dryRun: true,
+        allowed: true,
+        executed: false,
+        message: "dry-run only; Cordis hot-reload not wired"
+      }
+    };
+  }
+  return {
+    ok: false,
+    code: "STUB",
+    message: "plugin.reload execute is stubbed; hot-reload not wired yet"
+  };
+}
+function gatePluginUpdate(policy, params) {
+  if (!policy.allowPluginUpdate) {
+    return {
+      ok: false,
+      code: "UPDATE_DISABLED",
+      message: "plugin.update disabled (config.allowPluginUpdate=true to enable gate)"
+    };
+  }
+  if (!wantExecute(params)) {
+    return {
+      ok: true,
+      data: {
+        capability: "plugin.update",
+        dryRun: true,
+        allowed: true,
+        executed: false,
+        message: "dry-run only; signed update path not wired"
+      }
+    };
+  }
+  return {
+    ok: false,
+    code: "STUB",
+    message: "plugin.update execute is stubbed; signed self-update not wired yet"
+  };
+}
+
+// src/bridge/router.ts
+var active = /* @__PURE__ */ new Map();
+function fail(code, message) {
+  const e = new Error(message);
+  e.code = code;
+  throw e;
+}
+var BridgeRouter = class {
+  constructor(deps) {
+    this.deps = deps;
+  }
+  list() {
+    return listCapabilities();
+  }
+  cancel(requestId) {
+    const a = active.get(requestId);
+    if (!a) return false;
+    a.cancelled = true;
+    return true;
+  }
+  async invoke(capability, params, requestId) {
+    if (!requestId || typeof requestId !== "string") {
+      return { ok: false, requestId: String(requestId || ""), code: "VALIDATION", message: "requestId required" };
+    }
+    const desc = findCapability(capability);
+    if (!desc) {
+      return { ok: false, requestId, code: "NOT_FOUND", message: `unknown capability: ${capability}` };
+    }
+    const slot = { cancelled: false };
+    active.set(requestId, slot);
+    try {
+      const data = await this.dispatch(desc.id, params || {}, requestId, slot);
+      if (slot.cancelled) {
+        return { ok: false, requestId, code: "CANCELLED", message: "cancelled" };
+      }
+      return { ok: true, requestId, data };
+    } catch (e) {
+      const code = e && e.code ? String(e.code) : "INTERNAL";
+      const message = e && e.message ? String(e.message) : "invoke failed";
+      return { ok: false, requestId, code, message };
+    } finally {
+      active.delete(requestId);
+    }
+  }
+  async dispatch(id, params, _requestId, _slot) {
+    switch (id) {
+      case "instance.status":
+        return this.facadeStatus();
+      case "instance.metrics":
+        return this.facadeMetrics();
+      case "instance.enrollment":
+        return this.facadeEnrollment();
+      case "instance.logs.tail":
+        return this.facadeLogsTail(params);
+      case "services.health":
+        return this.facadeHealth();
+      case "dsh.restart":
+        return this.facadeOps("dsh.restart", params);
+      case "plugin.reload":
+        return this.facadeOps("plugin.reload", params);
+      case "plugin.update":
+        return this.facadeOps("plugin.update", params);
+      default:
+        fail("NOT_FOUND", `unknown capability: ${id}`);
+    }
+  }
+  facadeStatus() {
+    const s = this.deps.status() || {};
+    return {
+      dshReady: Boolean(s.dshReady),
+      restartNeeded: Boolean(s.restartNeeded),
+      plugin: s.plugin ?? null,
+      platform: s.platform ?? null,
+      arch: s.arch ?? null,
+      uptime: s.uptime ?? null,
+      rss: s.rss ?? null,
+      cpu: s.cpu ?? null,
+      memUsed: s.memUsed ?? null,
+      load: s.load ?? null,
+      rtt: s.rtt ?? null,
+      streams: s.streams ?? null
+    };
+  }
+  facadeMetrics() {
+    const s = (this.deps.metrics ? this.deps.metrics() : this.deps.status()) || {};
+    return {
+      cpu: s.cpu ?? null,
+      memUsed: s.memUsed ?? null,
+      load: s.load ?? null,
+      uptime: s.uptime ?? null,
+      rss: s.rss ?? null,
+      platform: s.platform ?? null,
+      arch: s.arch ?? null,
+      rtt: s.rtt ?? null
+    };
+  }
+  facadeEnrollment() {
+    return this.deps.enrollment() || {};
+  }
+  facadeLogsTail(params) {
+    const lines = clampLogLines(params);
+    if (!this.deps.logs || typeof this.deps.logs.tail !== "function") {
+      return { lines, entries: [], source: "none", note: "log ring not attached" };
+    }
+    const entries = this.deps.logs.tail(lines);
+    return { lines: entries.length, requested: lines, entries, source: "ring" };
+  }
+  async facadeHealth() {
+    try {
+      const local = this.deps.local ? this.deps.local() : null;
+      const linkState = this.deps.linkState ? this.deps.linkState() : null;
+      const report = await checkServicesHealth({ local, linkState });
+      return report;
+    } catch (e) {
+      return {
+        checkedAt: Date.now(),
+        services: [],
+        error: e && e.message ? String(e.message) : "health failed"
+      };
+    }
+  }
+  facadeOps(which, params) {
+    const policy = normalizeOpsPolicy(this.deps.opsPolicy ? this.deps.opsPolicy() : DEFAULT_OPS_POLICY);
+    const gate = which === "dsh.restart" ? gateDshRestart(policy, params) : which === "plugin.reload" ? gatePluginReload(policy, params) : gatePluginUpdate(policy, params);
+    if (!gate.ok) fail(gate.code, gate.message);
+    return gate.data;
+  }
+};
+async function handleControlMessage(router, msg) {
+  if (!msg || typeof msg !== "object") return null;
+  if (msg.type === "capability.list") {
+    const list = router.list();
+    return { agentCapVersion: list.agentCapVersion, capabilities: list.capabilities };
+  }
+  if (msg.type === "capability.invoke") {
+    const capability = String(msg.capability || msg.cap || "");
+    const requestId = String(msg.requestId || "");
+    const params = msg.params && typeof msg.params === "object" ? msg.params : {};
+    const result = await router.invoke(capability, params, requestId);
+    return result;
+  }
+  if (msg.type === "capability.cancel") {
+    const requestId = String(msg.requestId || "");
+    const ok = router.cancel(requestId);
+    return { cancelled: ok, requestId };
+  }
+  return null;
+}
+
 // src/link.ts
 var PROTO_TAG = "dra-v1";
 var HubLink = class extends EventEmitter2 {
@@ -5392,7 +5884,7 @@ var HubLink = class extends EventEmitter2 {
     } });
     this.mux = mux;
     let settled = false;
-    const fail = (why) => {
+    const fail2 = (why) => {
       if (this.ws !== ws) {
         try {
           mux.close();
@@ -5415,12 +5907,12 @@ var HubLink = class extends EventEmitter2 {
     ws.on("message", (d, isBinary) => {
       if (isBinary) mux.feed(Buffer.isBuffer(d) ? d : Buffer.from(d));
     });
-    ws.on("error", (e) => fail("\u8FDE\u63A5\u9519\u8BEF: " + e.message));
-    ws.on("close", () => fail("\u8FDE\u63A5\u5DF2\u65AD\u5F00"));
-    ws.on("unexpected-response", (_req, res) => fail(`Hub \u8FD4\u56DE HTTP ${res.statusCode}`));
-    mux.on("close", (e) => fail(e ? e.message : "\u4F1A\u8BDD\u5173\u95ED"));
+    ws.on("error", (e) => fail2("\u8FDE\u63A5\u9519\u8BEF: " + e.message));
+    ws.on("close", () => fail2("\u8FDE\u63A5\u5DF2\u65AD\u5F00"));
+    ws.on("unexpected-response", (_req, res) => fail2(`Hub \u8FD4\u56DE HTTP ${res.statusCode}`));
+    mux.on("close", (e) => fail2(e ? e.message : "\u4F1A\u8BDD\u5173\u95ED"));
     mux.on("stream", (s) => this.onStream(s));
-    ws.on("open", () => this.handshake(mux).catch((e) => fail(String(e.message || e))));
+    ws.on("open", () => this.handshake(mux).catch((e) => fail2(String(e.message || e))));
   }
   async handshake(mux) {
     const ctrl = mux.open();
@@ -5488,7 +5980,23 @@ var HubLink = class extends EventEmitter2 {
         }
         if (m.type === "sso.request") {
           this.o.sso(String(m.base)).then((setCookie) => send(ctrl, { type: "reply", id: m.id, setCookie }), (e) => send(ctrl, { type: "reply", id: m.id, error: "sso failed" + (e && e.code ? ": " + e.code : "") }));
-        } else if (m.id) send(ctrl, { type: "reply", id: m.id, error: "unsupported" });
+          continue;
+        }
+        if (this.o.bridge && m.type && String(m.type).startsWith("capability.")) {
+          const id = m.id;
+          handleControlMessage(this.o.bridge, m).then((body) => {
+            if (!id) return;
+            if (!body) {
+              send(ctrl, { type: "reply", id, error: "unsupported" });
+              return;
+            }
+            send(ctrl, { type: "reply", id, ...body });
+          }, (e) => {
+            if (id) send(ctrl, { type: "reply", id, error: String(e && e.message || e), code: "INTERNAL" });
+          });
+          continue;
+        }
+        if (m.id) send(ctrl, { type: "reply", id: m.id, error: "unsupported" });
       }
     })();
   }
@@ -5501,7 +6009,7 @@ var HubLink = class extends EventEmitter2 {
         return;
       }
       const rest = lines.rest();
-      const sock = net.connect({ host: target.host, port: target.port, allowHalfOpen: true });
+      const sock = net2.connect({ host: target.host, port: target.port, allowHalfOpen: true });
       sock.setNoDelay(true);
       if (rest.length) sock.write(rest);
       s.pipe(sock);
@@ -5754,7 +6262,10 @@ function buildConfig(z) {
     autoConnect: z.boolean().default(true).description("DSH \u542F\u52A8\u65F6\u81EA\u52A8\u8FDE\u63A5 Hub"),
     proxy: z.string().default("system").description("\u4EE3\u7406\uFF1Asystem\uFF08\u73AF\u5883\u53D8\u91CF/\u7CFB\u7EDF\u4EE3\u7406\uFF0C\u5982 Clash\uFF09| direct | http://127.0.0.1:7890"),
     manageTrustedHosts: z.boolean().default(true).description("\u81EA\u52A8\u628A\u672C\u673A\u8BBF\u95EE\u57DF\u540D\u52A0\u5165 DSH trustedHosts"),
-    keyStore: z.union([z.const("auto"), z.const("file")]).default("auto").description("\u8BBE\u5907\u5BC6\u94A5\u5B58\u50A8\uFF1Aauto\uFF08macOS \u94A5\u5319\u4E32\uFF0C\u5931\u8D25\u7528\u52A0\u5BC6\u6587\u4EF6\uFF09| file")
+    keyStore: z.union([z.const("auto"), z.const("file")]).default("auto").description("\u8BBE\u5907\u5BC6\u94A5\u5B58\u50A8\uFF1Aauto\uFF08macOS \u94A5\u5319\u4E32\uFF0C\u5931\u8D25\u7528\u52A0\u5BC6\u6587\u4EF6\uFF09| file"),
+    remoteRestart: z.boolean().default(false).description("\u5141\u8BB8\u8FDC\u7A0B\u89E6\u53D1 dsh.restart \u95F8\u95E8\uFF08\u9ED8\u8BA4\u5173\uFF1BA0.4 \u4ECD\u4E0D\u771F\u6B63\u91CD\u542F\uFF09"),
+    allowPluginReload: z.boolean().default(false).description("\u5141\u8BB8 plugin.reload \u95F8\u95E8\uFF08\u9ED8\u8BA4\u5173\uFF1B\u70ED\u91CD\u8F7D\u672A\u63A5\u7EBF\uFF09"),
+    allowPluginUpdate: z.boolean().default(false).description("\u5141\u8BB8 plugin.update \u95F8\u95E8\uFF08\u9ED8\u8BA4\u5173\uFF1B\u9A8C\u7B7E\u5347\u7EA7\u672A\u63A5\u7EBF\uFF09")
   }).description("DSH \u8FDC\u7A0B\u7BA1\u7406 \xB7 \u8FDE\u63A5\u5230\u81EA\u5EFA Hub");
 }
 var Config = Schema ? buildConfig(Schema) : void 0;
@@ -5811,7 +6322,10 @@ function normalizeConfig(raw) {
     autoConnect: c.autoConnect !== false,
     proxy: String(c.proxy || "system"),
     manageTrustedHosts: c.manageTrustedHosts !== false,
-    keyStore: c.keyStore === "file" ? "file" : "auto"
+    keyStore: c.keyStore === "file" ? "file" : "auto",
+    remoteRestart: c.remoteRestart === true,
+    allowPluginReload: c.allowPluginReload === true,
+    allowPluginUpdate: c.allowPluginUpdate === true
   };
 }
 function apply(ctx, rawConfig) {
@@ -5824,9 +6338,27 @@ function apply(ctx, rawConfig) {
   let store = null;
   let snap = null;
   const recent = [];
+  const logRing = new LogRing(500);
   const note = (text2) => {
-    recent.unshift({ ts: Date.now(), text: text2 });
+    const safe = redact(text2);
+    recent.unshift({ ts: Date.now(), text: safe });
     recent.length = Math.min(recent.length, 20);
+    logRing.push(safe, "agent");
+  };
+  const _info = log.info.bind(log), _warn = log.warn.bind(log);
+  log.info = (m) => {
+    _info(m);
+    try {
+      logRing.push(m, "info");
+    } catch {
+    }
+  };
+  log.warn = (m) => {
+    _warn(m);
+    try {
+      logRing.push(m, "warn");
+    } catch {
+    }
   };
   const getStore = async () => store ||= await pickStore(dataDir(), cfg.keyStore === "file" ? "file" : void 0);
   const syncHosts = (hosts) => {
@@ -5867,6 +6399,38 @@ function apply(ctx, rawConfig) {
       return;
     }
     const { priv } = loadKey(pkcs8);
+    const bridge = new BridgeRouter({
+      status: () => {
+        const r = metrics(snap);
+        snap = r.snap;
+        return { ...r.m, dshReady: Boolean(local), restartNeeded: Boolean(state.restartNeeded), plugin: VERSION, rtt: link ? link.rtt : null };
+      },
+      enrollment: () => ({
+        hub: state.hub || null,
+        deviceId: state.deviceId || null,
+        name: state.name || cfg.instanceName,
+        slug: state.slug || null,
+        fingerprint: state.fingerprint || null,
+        fingerprintPrefix: state.fingerprint ? String(state.fingerprint).slice(0, 12) : null,
+        state: link ? link.state : state.deviceId ? "stopped" : "not-enrolled",
+        lastError: link ? link.lastError : null,
+        since: link ? link.since : null,
+        rtt: link ? link.rtt : null,
+        hosts: state.hosts || (link ? link.hosts : []) || [],
+        keyStore: store ? store.kind : state.keyStore || null,
+        dshReady: Boolean(local),
+        plugin: VERSION
+      }),
+      logs: { tail: (n) => logRing.tail(n) },
+      local: () => local,
+      linkState: () => link ? link.state : null,
+      opsPolicy: () => ({
+        remoteRestart: cfg.remoteRestart === true,
+        allowPluginReload: cfg.allowPluginReload === true,
+        allowPluginUpdate: cfg.allowPluginUpdate === true
+      }),
+      log
+    });
     link = new HubLink({
       hub: state.hub,
       deviceId: state.deviceId,
@@ -5887,6 +6451,7 @@ function apply(ctx, rawConfig) {
         snap = r.snap;
         return { ...r.m, dshReady: Boolean(local), restartNeeded: Boolean(state.restartNeeded), plugin: VERSION };
       },
+      bridge,
       log
     });
     link.on("welcome", (w) => {

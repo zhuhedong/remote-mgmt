@@ -10,6 +10,8 @@ import { signMsg } from "./keystore.js";
 import { redact } from "./redact.js";
 import { resolveProxy, agentFor } from "./net.js";
 import type { KeyObject } from "node:crypto";
+import type { BridgeRouter } from "./bridge/index.js";
+import { handleControlMessage } from "./bridge/index.js";
 
 export const PROTO_TAG = "dra-v1";
 
@@ -19,6 +21,8 @@ export interface LinkOptions {
   local: () => { host: string; port: number } | null; // dsh web origin
   sso: (base: string) => Promise<string[]>;            // returns Set-Cookie headers
   status: () => Record<string, unknown>;
+  /** Capability Bridge router (list / invoke / cancel on control stream). */
+  bridge?: BridgeRouter;
   log: { info: (m: string) => void; warn: (m: string) => void };
   minBackoffMs?: number; maxBackoffMs?: number; statusEveryMs?: number;
 }
@@ -149,7 +153,20 @@ export class HubLink extends EventEmitter {
         if (m.type === "revoked") { this.set("revoked", "设备已在 Hub 移除"); this.wanted = false; this.emit("revoked"); mux.close(); return; }
         if (m.type === "sso.request") {
           this.o.sso(String(m.base)).then((setCookie) => send(ctrl, { type: "reply", id: m.id, setCookie }), (e) => send(ctrl, { type: "reply", id: m.id, error: "sso failed" + (e && e.code ? ": " + e.code : "") }));
-        } else if (m.id) send(ctrl, { type: "reply", id: m.id, error: "unsupported" });
+          continue;
+        }
+        if (this.o.bridge && m.type && String(m.type).startsWith("capability.")) {
+          const id = m.id;
+          handleControlMessage(this.o.bridge, m).then((body) => {
+            if (!id) return;
+            if (!body) { send(ctrl, { type: "reply", id, error: "unsupported" }); return; }
+            send(ctrl, { type: "reply", id, ...body });
+          }, (e) => {
+            if (id) send(ctrl, { type: "reply", id, error: String(e && e.message || e), code: "INTERNAL" });
+          });
+          continue;
+        }
+        if (m.id) send(ctrl, { type: "reply", id: m.id, error: "unsupported" });
       }
     })();
   }

@@ -3,3 +3,13 @@ agent/test/.build/
 hub/dist/
 deploy/remote-hub-linux-amd64
 agent/dist/
+# Android
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.idea/
+android/*.iml
+android/captures/
+android/.cxx/
+*.apk
+*.aab

@@ -43,6 +43,8 @@ func OpenStore(dir string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, err
 	}
+	// migrations (idempotent)
+	_, _ = db.Exec(`ALTER TABLE sessions ADD COLUMN reauth_at INTEGER NOT NULL DEFAULT 0`)
 	key, err := loadOrCreateKey(filepath.Join(dir, "master.key"))
 	if err != nil {
 		return nil, err
