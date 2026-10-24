@@ -126,10 +126,32 @@ export const L0_CATALOG: CapabilityDescriptor[] = [
   },
 ];
 
-export function listCapabilities(): CapListResult {
-  return { agentCapVersion: AGENT_CAP_VERSION, capabilities: L0_CATALOG.map((c) => ({ ...c })) };
+const sid = { type: "string", minLength: 1, maxLength: 200 };
+function l1(id: string, title: string, description: string, properties: Record<string, unknown>, required: string[], category: "chat" | "config", stream = false): CapabilityDescriptor {
+  return {
+    id, title, description,
+    params: { type: "object", properties, required, additionalProperties: false },
+    stream, permission: "open", sensitive: false, minAgentVersion: "0.2.0", category,
+  };
 }
 
-export function findCapability(id: string): CapabilityDescriptor | undefined {
-  return L0_CATALOG.find((c) => c.id === id);
+/** L1 (A1) chat/models over DSH sessionController. Declared only when the host exposes it. */
+export const L1_CATALOG: CapabilityDescriptor[] = [
+  l1("chat.sessions.list", "会话列表", "DSH 会话与 Spaces（按工作目录分组）", {}, [], "chat"),
+  l1("chat.session.create", "新建会话", "新建 DSH 会话（可指定 cwd）", { cwd: { type: "string", maxLength: 1000 } }, [], "chat"),
+  l1("chat.history", "会话历史", "按页读取会话消息", { sessionId: sid, maxMessages: { type: "integer", minimum: 1, maximum: 200 }, beforeSeq: { type: "integer", minimum: 0 } }, ["sessionId"], "chat"),
+  l1("chat.prompt", "发送消息", "向会话发送一条消息（驱动 DSH agent loop）", { sessionId: sid, text: { type: "string", minLength: 1, maxLength: 20000 }, mode: { type: "string", enum: ["followup", "steer"] }, clientRequestId: { type: "string" } }, ["sessionId", "text"], "chat"),
+  l1("chat.follow", "跟随回复", "长轮询会话状态（version 游标），流式文本在 live 字段", { sessionId: sid, version: { type: "integer" }, waitMs: { type: "integer", minimum: 0, maximum: 20000 } }, ["sessionId"], "chat", true),
+  l1("chat.cancel", "停止回复", "取消当前回合", { sessionId: sid }, ["sessionId"], "chat"),
+  l1("models.list", "模型目录", "可用模型与当前选择", { sessionId: sid }, [], "config"),
+  l1("models.select", "切换模型", "为会话选择模型", { sessionId: sid, provider: { type: "string" }, model: { type: "string" }, reasoningEffort: { type: "string" } }, ["sessionId", "provider", "model"], "config"),
+];
+
+export function listCapabilities(includeL1 = false): CapListResult {
+  const all = includeL1 ? [...L0_CATALOG, ...L1_CATALOG] : L0_CATALOG;
+  return { agentCapVersion: AGENT_CAP_VERSION, capabilities: all.map((c) => ({ ...c })) };
+}
+
+export function findCapability(id: string, includeL1 = false): CapabilityDescriptor | undefined {
+  return L0_CATALOG.find((c) => c.id === id) || (includeL1 ? L1_CATALOG.find((c) => c.id === id) : undefined);
 }

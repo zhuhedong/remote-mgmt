@@ -5286,7 +5286,7 @@ function postJSON(url, body, agent, timeout = 15e3) {
 }
 
 // src/bridge/types.ts
-var AGENT_CAP_VERSION = 1;
+var AGENT_CAP_VERSION = 2;
 var emptyObjectParams = {
   type: "object",
   properties: {},
@@ -5411,11 +5411,354 @@ var L0_CATALOG = [
     category: "operate"
   }
 ];
-function listCapabilities() {
-  return { agentCapVersion: AGENT_CAP_VERSION, capabilities: L0_CATALOG.map((c) => ({ ...c })) };
+var sid = { type: "string", minLength: 1, maxLength: 200 };
+function l1(id, title, description, properties, required, category, stream = false) {
+  return {
+    id,
+    title,
+    description,
+    params: { type: "object", properties, required, additionalProperties: false },
+    stream,
+    permission: "open",
+    sensitive: false,
+    minAgentVersion: "0.2.0",
+    category
+  };
 }
-function findCapability(id) {
-  return L0_CATALOG.find((c) => c.id === id);
+var L1_CATALOG = [
+  l1("chat.sessions.list", "\u4F1A\u8BDD\u5217\u8868", "DSH \u4F1A\u8BDD\u4E0E Spaces\uFF08\u6309\u5DE5\u4F5C\u76EE\u5F55\u5206\u7EC4\uFF09", {}, [], "chat"),
+  l1("chat.session.create", "\u65B0\u5EFA\u4F1A\u8BDD", "\u65B0\u5EFA DSH \u4F1A\u8BDD\uFF08\u53EF\u6307\u5B9A cwd\uFF09", { cwd: { type: "string", maxLength: 1e3 } }, [], "chat"),
+  l1("chat.history", "\u4F1A\u8BDD\u5386\u53F2", "\u6309\u9875\u8BFB\u53D6\u4F1A\u8BDD\u6D88\u606F", { sessionId: sid, maxMessages: { type: "integer", minimum: 1, maximum: 200 }, beforeSeq: { type: "integer", minimum: 0 } }, ["sessionId"], "chat"),
+  l1("chat.prompt", "\u53D1\u9001\u6D88\u606F", "\u5411\u4F1A\u8BDD\u53D1\u9001\u4E00\u6761\u6D88\u606F\uFF08\u9A71\u52A8 DSH agent loop\uFF09", { sessionId: sid, text: { type: "string", minLength: 1, maxLength: 2e4 }, mode: { type: "string", enum: ["followup", "steer"] }, clientRequestId: { type: "string" } }, ["sessionId", "text"], "chat"),
+  l1("chat.follow", "\u8DDF\u968F\u56DE\u590D", "\u957F\u8F6E\u8BE2\u4F1A\u8BDD\u72B6\u6001\uFF08version \u6E38\u6807\uFF09\uFF0C\u6D41\u5F0F\u6587\u672C\u5728 live \u5B57\u6BB5", { sessionId: sid, version: { type: "integer" }, waitMs: { type: "integer", minimum: 0, maximum: 2e4 } }, ["sessionId"], "chat", true),
+  l1("chat.cancel", "\u505C\u6B62\u56DE\u590D", "\u53D6\u6D88\u5F53\u524D\u56DE\u5408", { sessionId: sid }, ["sessionId"], "chat"),
+  l1("models.list", "\u6A21\u578B\u76EE\u5F55", "\u53EF\u7528\u6A21\u578B\u4E0E\u5F53\u524D\u9009\u62E9", { sessionId: sid }, [], "config"),
+  l1("models.select", "\u5207\u6362\u6A21\u578B", "\u4E3A\u4F1A\u8BDD\u9009\u62E9\u6A21\u578B", { sessionId: sid, provider: { type: "string" }, model: { type: "string" }, reasoningEffort: { type: "string" } }, ["sessionId", "provider", "model"], "config")
+];
+function listCapabilities(includeL1 = false) {
+  const all = includeL1 ? [...L0_CATALOG, ...L1_CATALOG] : L0_CATALOG;
+  return { agentCapVersion: AGENT_CAP_VERSION, capabilities: all.map((c) => ({ ...c })) };
+}
+function findCapability(id, includeL1 = false) {
+  return L0_CATALOG.find((c) => c.id === id) || (includeL1 ? L1_CATALOG.find((c) => c.id === id) : void 0);
+}
+
+// src/bridge/chat.ts
+import { randomUUID } from "node:crypto";
+function fail(code, message) {
+  const e = new Error(message);
+  e.code = code;
+  throw e;
+}
+function unwrap(v) {
+  if (v && typeof v === "object" && typeof v.ok === "boolean" && ("value" in v || "error" in v)) {
+    if (v.ok) return v.value;
+    const err = v.error || {};
+    fail(String(err.code || "DSH_ERROR"), String(err.message || "dsh error"));
+  }
+  return v;
+}
+function textOf(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter((p) => p && (p.type === "text" || p.type === void 0) && typeof p.text === "string").map((p) => p.text).join("");
+}
+function basename(p) {
+  const s = String(p || "").replace(/[\\/]+$/, "");
+  const i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+var MAX_MESSAGES = 80;
+function applyEvent(msgs, ev) {
+  if (!ev || typeof ev.type !== "string") return false;
+  const d = ev.data ?? ev;
+  const seq = Number(ev.seq) || 0;
+  const time = typeof ev.time === "number" ? ev.time : void 0;
+  switch (ev.type) {
+    case "user/message": {
+      const t = textOf(d.content ?? d.message?.content);
+      msgs.push({ seq, role: "user", text: t, time });
+      return true;
+    }
+    case "assistant/message": {
+      const t = textOf(d.message?.content ?? d.content);
+      if (t.trim()) msgs.push({ seq, role: "assistant", text: t, time });
+      return true;
+    }
+    case "tool/call": {
+      msgs.push({ seq, role: "step", text: String(d.name || "tool"), name: String(d.name || "tool"), status: "running", callId: d.callId, time });
+      return true;
+    }
+    case "tool/result": {
+      const callId = d.message?.callId ?? d.message?.toolCallId ?? d.callId;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m.role === "step" && m.status === "running" && (callId === void 0 || m.callId === callId)) {
+          m.status = d.error ? "error" : "done";
+          break;
+        }
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+function chunkText(frame) {
+  const c = frame && frame.chunk;
+  if (!c) return "";
+  if (c.type === "text-delta" && typeof c.text === "string") return c.text;
+  return "";
+}
+var Follower = class {
+  constructor(ctl, sessionId, onClose) {
+    this.ctl = ctl;
+    this.onClose = onClose;
+    this.state = { sessionId, version: 0, cursor: -1, messages: [], live: "", running: false, error: null };
+    void this.run();
+  }
+  state;
+  abort = new AbortController();
+  waiters = [];
+  lastPoll = Date.now();
+  closed = false;
+  bump() {
+    this.state.version++;
+    if (this.state.messages.length > MAX_MESSAGES) this.state.messages.splice(0, this.state.messages.length - MAX_MESSAGES);
+    const w = this.waiters;
+    this.waiters = [];
+    for (const f of w) f();
+  }
+  wait(ms) {
+    return new Promise((r) => {
+      const t = setTimeout(() => {
+        this.waiters = this.waiters.filter((x) => x !== done);
+        r();
+      }, ms);
+      const done = () => {
+        clearTimeout(t);
+        r();
+      };
+      this.waiters.push(done);
+    });
+  }
+  markRunning(v) {
+    this.state.running = v;
+    this.bump();
+  }
+  async run() {
+    try {
+      const it = this.ctl.follow(
+        { address: { kind: "session", sessionId: this.state.sessionId }, maxMessages: 60, assistantStream: true },
+        this.abort.signal
+      );
+      for await (const raw of it) {
+        const f = unwrap(raw);
+        if (!f) continue;
+        if (f.type === "snapshot") {
+          this.state.messages = [];
+          for (const r of f.records || []) if (r && r.type === "event") applyEvent(this.state.messages, r.event);
+          this.state.cursor = Number(f.cursor) || 0;
+          const active2 = f.assistantStream && f.assistantStream.activeAttempt;
+          this.state.live = active2 ? active2.stream?.text ?? "" : "";
+          this.state.running = Boolean(active2);
+          this.bump();
+        } else if (f.type === "event") {
+          const ev = f.event;
+          applyEvent(this.state.messages, ev);
+          this.state.cursor = Number(ev?.seq) || this.state.cursor;
+          if (ev?.type === "assistant/message") this.state.live = "";
+          if (ev?.type === "turn/start") this.state.running = true;
+          if (ev?.type === "turn/end" || ev?.type === "agent/idle") {
+            this.state.running = false;
+            this.state.live = "";
+          }
+          this.bump();
+        } else if (f.type === "assistant-stream") {
+          const fr = f.frame || {};
+          if (fr.type === "start") {
+            this.state.live = "";
+            this.state.running = true;
+          }
+          const t = chunkText(fr);
+          if (t) this.state.live += t;
+          this.bump();
+        }
+      }
+    } catch (e) {
+      if (!this.abort.signal.aborted) {
+        this.state.error = e?.message ? String(e.message) : "follow failed";
+        this.bump();
+      }
+    } finally {
+      this.closed = true;
+      this.onClose();
+    }
+  }
+  close() {
+    this.abort.abort();
+    this.closed = true;
+    this.bump();
+  }
+};
+var ChatBridge = class {
+  constructor(controller, idleMs = 12e4) {
+    this.controller = controller;
+    this.idleMs = idleMs;
+  }
+  followers = /* @__PURE__ */ new Map();
+  sweeper = null;
+  available() {
+    const c = this.controller();
+    return Boolean(c && typeof c.list === "function" && typeof c.prompt === "function" && typeof c.modelCatalog === "function");
+  }
+  ctl() {
+    const c = this.controller();
+    if (!c) fail("UNAVAILABLE", "DSH sessionController \u4E0D\u53EF\u7528\uFF08\u9700 DSH Desktop 0.2.x\uFF09");
+    return c;
+  }
+  sig(ms = 3e4) {
+    return AbortSignal.timeout(ms);
+  }
+  async sessionsList() {
+    const r = unwrap(await this.ctl().list({}, this.sig()));
+    const items = (r && Array.isArray(r.items) ? r.items : []).filter((it) => !it.parentSessionId);
+    const sessions = items.map((it) => {
+      const v = it.projections?.values || {};
+      const title = typeof v.title === "string" ? v.title : typeof v.sessionTitle?.title === "string" ? v.sessionTitle.title : null;
+      return {
+        sessionId: it.sessionId,
+        title,
+        cwd: it.cwd ?? null,
+        space: it.cwd ? basename(it.cwd) : null,
+        updatedAt: it.updatedAt ?? null,
+        running: Boolean(it.running),
+        blank: Boolean(it.blank)
+      };
+    });
+    const spaces = {};
+    for (const s of sessions) if (s.cwd) (spaces[s.cwd] ??= { name: s.space, cwd: s.cwd, count: 0 }).count++;
+    return { sessions, spaces: Object.values(spaces) };
+  }
+  async sessionCreate(params) {
+    const req = {};
+    if (typeof params.cwd === "string" && params.cwd) req.cwd = params.cwd;
+    const r = unwrap(await this.ctl().create(req));
+    const sessionId = r?.sessionId ?? r?.session?.id ?? r?.id;
+    if (!sessionId) fail("DSH_ERROR", "create \u672A\u8FD4\u56DE sessionId");
+    return { sessionId, agentPreset: r?.agentPreset ?? null };
+  }
+  async history(params) {
+    const sessionId = reqSession(params);
+    const max = Math.min(Math.max(Number(params.maxMessages) || 50, 1), 200);
+    const req = { address: { kind: "session", sessionId }, maxMessages: max };
+    if (Number.isSafeInteger(params.beforeSeq)) req.beforeSeq = params.beforeSeq;
+    const r = unwrap(await this.ctl().page(req, this.sig()));
+    const messages = [];
+    for (const rec of r?.records || []) if (rec && rec.type === "event") applyEvent(messages, rec.event);
+    return { sessionId, messages, hasMore: Boolean(r?.hasMore) };
+  }
+  follower(sessionId) {
+    let f = this.followers.get(sessionId);
+    if (!f || f.closed) {
+      f = new Follower(this.ctl(), sessionId, () => {
+        if (this.followers.get(sessionId) === f) this.followers.delete(sessionId);
+      });
+      this.followers.set(sessionId, f);
+      this.ensureSweeper();
+    }
+    f.lastPoll = Date.now();
+    return f;
+  }
+  ensureSweeper() {
+    if (this.sweeper) return;
+    this.sweeper = setInterval(() => {
+      const now = Date.now();
+      for (const [id, f] of this.followers) if (now - f.lastPoll > this.idleMs) {
+        f.close();
+        this.followers.delete(id);
+      }
+      if (this.followers.size === 0 && this.sweeper) {
+        clearInterval(this.sweeper);
+        this.sweeper = null;
+      }
+    }, 15e3);
+    this.sweeper.unref?.();
+  }
+  async prompt(params) {
+    const sessionId = reqSession(params);
+    const text2 = typeof params.text === "string" ? params.text : "";
+    if (!text2.trim()) fail("VALIDATION", "text required");
+    if (text2.length > 2e4) fail("VALIDATION", "text too long");
+    const f = this.follower(sessionId);
+    const requestId = typeof params.clientRequestId === "string" && params.clientRequestId ? params.clientRequestId : randomUUID();
+    const req = { requestId, sessionId, mode: params.mode === "steer" ? "steer" : "followup", content: [{ type: "text", text: text2 }] };
+    const r = unwrap(await this.ctl().prompt(req, this.sig()));
+    f.markRunning(true);
+    return { accepted: r?.accepted !== false, requestId, version: f.state.version };
+  }
+  /** Long-poll: returns immediately if version differs, else waits up to waitMs for a change. */
+  async follow(params) {
+    const sessionId = reqSession(params);
+    const since = Number.isSafeInteger(params.version) ? Number(params.version) : -1;
+    const waitMs = Math.min(Math.max(Number(params.waitMs) || 0, 0), 2e4);
+    const f = this.follower(sessionId);
+    if (f.state.version === since && waitMs > 0) await f.wait(waitMs);
+    if (f.state.version === since) return { ...f.state, messages: [], unchanged: true };
+    return { ...f.state, messages: f.state.messages.map((m) => ({ ...m })) };
+  }
+  async cancel(params) {
+    const sessionId = reqSession(params);
+    unwrap(await this.ctl().cancel({ sessionId }));
+    return { cancelled: true };
+  }
+  async modelsList(params) {
+    const cat = unwrap(await this.ctl().modelCatalog());
+    let current = cat?.default ?? null;
+    const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+    if (sessionId && typeof this.ctl().projections === "function") {
+      try {
+        const p = unwrap(await this.ctl().projections({ sessionId }, this.sig(1e4)));
+        const ms = p?.values?.modelSelection;
+        const sel = ms?.next ?? ms?.pending ?? ms?.lastUsed;
+        if (sel && sel.provider && sel.model) current = sel;
+      } catch {
+      }
+    }
+    const groups = (cat?.groups || []).map((g) => ({
+      id: g.id,
+      name: g.name ?? g.id,
+      models: (g.models || []).map((m) => ({
+        id: m.id,
+        name: m.name ?? m.displayName ?? m.id,
+        reasoning: m.reasoning ? { efforts: (m.reasoning.efforts || []).map((e) => e.id ?? e), defaultEffort: m.reasoning.defaultEffort ?? null } : null
+      }))
+    }));
+    return { current, default: cat?.default ?? null, groups, failures: cat?.failures ?? [] };
+  }
+  async modelsSelect(params) {
+    const sessionId = reqSession(params);
+    const provider = typeof params.provider === "string" ? params.provider : "";
+    const model = typeof params.model === "string" ? params.model : "";
+    if (!provider || !model) fail("VALIDATION", "provider and model required");
+    const req = { sessionId, provider, model };
+    if (typeof params.reasoningEffort === "string" && params.reasoningEffort) req.reasoningEffort = params.reasoningEffort;
+    const r = unwrap(await this.ctl().selectModel(req));
+    return { selection: r ?? { provider, model } };
+  }
+  dispose() {
+    for (const f of this.followers.values()) f.close();
+    this.followers.clear();
+    if (this.sweeper) {
+      clearInterval(this.sweeper);
+      this.sweeper = null;
+    }
+  }
+};
+function reqSession(params) {
+  const s = params.sessionId;
+  if (typeof s !== "string" || !s || s.length > 200) fail("VALIDATION", "sessionId required");
+  return s;
 }
 
 // src/bridge/logs.ts
@@ -5630,7 +5973,7 @@ function gatePluginUpdate(policy, params) {
 
 // src/bridge/router.ts
 var active = /* @__PURE__ */ new Map();
-function fail(code, message) {
+function fail2(code, message) {
   const e = new Error(message);
   e.code = code;
   throw e;
@@ -5640,7 +5983,14 @@ var BridgeRouter = class {
     this.deps = deps;
   }
   list() {
-    return listCapabilities();
+    return listCapabilities(this.l1());
+  }
+  l1() {
+    try {
+      return Boolean(this.deps.chat && this.deps.chat.available());
+    } catch {
+      return false;
+    }
   }
   cancel(requestId) {
     const a = active.get(requestId);
@@ -5652,7 +6002,7 @@ var BridgeRouter = class {
     if (!requestId || typeof requestId !== "string") {
       return { ok: false, requestId: String(requestId || ""), code: "VALIDATION", message: "requestId required" };
     }
-    const desc = findCapability(capability);
+    const desc = findCapability(capability, this.l1());
     if (!desc) {
       return { ok: false, requestId, code: "NOT_FOUND", message: `unknown capability: ${capability}` };
     }
@@ -5690,8 +6040,24 @@ var BridgeRouter = class {
         return this.facadeOps("plugin.reload", params);
       case "plugin.update":
         return this.facadeOps("plugin.update", params);
+      case "chat.sessions.list":
+        return this.deps.chat.sessionsList();
+      case "chat.session.create":
+        return this.deps.chat.sessionCreate(params);
+      case "chat.history":
+        return this.deps.chat.history(params);
+      case "chat.prompt":
+        return this.deps.chat.prompt(params);
+      case "chat.follow":
+        return this.deps.chat.follow(params);
+      case "chat.cancel":
+        return this.deps.chat.cancel(params);
+      case "models.list":
+        return this.deps.chat.modelsList(params);
+      case "models.select":
+        return this.deps.chat.modelsSelect(params);
       default:
-        fail("NOT_FOUND", `unknown capability: ${id}`);
+        fail2("NOT_FOUND", `unknown capability: ${id}`);
     }
   }
   facadeStatus() {
@@ -5752,7 +6118,7 @@ var BridgeRouter = class {
   facadeOps(which, params) {
     const policy = normalizeOpsPolicy(this.deps.opsPolicy ? this.deps.opsPolicy() : DEFAULT_OPS_POLICY);
     const gate = which === "dsh.restart" ? gateDshRestart(policy, params) : which === "plugin.reload" ? gatePluginReload(policy, params) : gatePluginUpdate(policy, params);
-    if (!gate.ok) fail(gate.code, gate.message);
+    if (!gate.ok) fail2(gate.code, gate.message);
     return gate.data;
   }
 };
@@ -5884,7 +6250,7 @@ var HubLink = class extends EventEmitter2 {
     } });
     this.mux = mux;
     let settled = false;
-    const fail2 = (why) => {
+    const fail3 = (why) => {
       if (this.ws !== ws) {
         try {
           mux.close();
@@ -5907,12 +6273,12 @@ var HubLink = class extends EventEmitter2 {
     ws.on("message", (d, isBinary) => {
       if (isBinary) mux.feed(Buffer.isBuffer(d) ? d : Buffer.from(d));
     });
-    ws.on("error", (e) => fail2("\u8FDE\u63A5\u9519\u8BEF: " + e.message));
-    ws.on("close", () => fail2("\u8FDE\u63A5\u5DF2\u65AD\u5F00"));
-    ws.on("unexpected-response", (_req, res) => fail2(`Hub \u8FD4\u56DE HTTP ${res.statusCode}`));
-    mux.on("close", (e) => fail2(e ? e.message : "\u4F1A\u8BDD\u5173\u95ED"));
+    ws.on("error", (e) => fail3("\u8FDE\u63A5\u9519\u8BEF: " + e.message));
+    ws.on("close", () => fail3("\u8FDE\u63A5\u5DF2\u65AD\u5F00"));
+    ws.on("unexpected-response", (_req, res) => fail3(`Hub \u8FD4\u56DE HTTP ${res.statusCode}`));
+    mux.on("close", (e) => fail3(e ? e.message : "\u4F1A\u8BDD\u5173\u95ED"));
     mux.on("stream", (s) => this.onStream(s));
-    ws.on("open", () => this.handshake(mux).catch((e) => fail2(String(e.message || e))));
+    ws.on("open", () => this.handshake(mux).catch((e) => fail3(String(e.message || e))));
   }
   async handshake(mux) {
     const ctrl = mux.open();
@@ -6273,7 +6639,7 @@ var Config = Schema ? buildConfig(Schema) : void 0;
 // src/index.ts
 var name = "dsh-remote-agent";
 var PREFIX = "/dsh-remote-agent";
-var VERSION = "0.1.0";
+var VERSION = "0.2.0";
 var LEGACY_HOSTS = ["dsh.cli-help.com"];
 var here = () => {
   try {
@@ -6386,6 +6752,8 @@ function apply(ctx, rawConfig) {
       log.warn(`trustedHosts \u66F4\u65B0\u5931\u8D25: ${e.message}`);
     }
   };
+  let sessionCtl = null;
+  const chat = new ChatBridge(() => sessionCtl);
   let starting = null;
   const startLink = () => starting ??= startLinkOnce().finally(() => {
     starting = null;
@@ -6422,6 +6790,7 @@ function apply(ctx, rawConfig) {
         plugin: VERSION
       }),
       logs: { tail: (n) => logRing.tail(n) },
+      chat,
       local: () => local,
       linkState: () => link ? link.state : null,
       opsPolicy: () => ({
@@ -6567,6 +6936,22 @@ function apply(ctx, rawConfig) {
       });
     } catch (e) {
       log.warn(`\u65E0\u6CD5\u6CE8\u5165 webServer: ${e.message}`);
+    }
+    try {
+      ctx.inject(["sessionController"], (c) => {
+        const run2 = () => {
+          sessionCtl = c.sessionController || null;
+          if (sessionCtl) log.info("A1: sessionController \u5DF2\u63A5\u5165");
+          return () => {
+            chat.dispose();
+            sessionCtl = null;
+          };
+        };
+        if (typeof c.effect === "function") c.effect(run2);
+        else run2();
+      });
+    } catch (e) {
+      log.warn(`A1 sessionController \u4E0D\u53EF\u7528: ${e.message}`);
     }
     try {
       ctx.inject(["connection", "webServer"], (c) => {

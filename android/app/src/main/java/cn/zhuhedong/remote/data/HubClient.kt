@@ -70,7 +70,7 @@ class HubClient(private val store: SessionStore) {
     val http: OkHttpClient = OkHttpClient.Builder()
         .cookieJar(jar)
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
     fun clearCookies() {

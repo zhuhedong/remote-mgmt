@@ -35,16 +35,28 @@ class MainActivity : ComponentActivity() {
 private fun AppNav(app: DshRemoteApp) {
     val nav = rememberNavController()
     val start = remember {
-        if (app.hub.isLoggedIn()) "instances" else "login"
+        if (app.hub.isLoggedIn()) "home" else "login"
     }
     NavHost(navController = nav, startDestination = start) {
         composable("login") {
             val vm = viewModel<cn.zhuhedong.remote.viewmodel.LoginViewModel>(factory = VmFactory(app.hub))
             LoginScreen(vm) {
-                nav.navigate("instances") {
+                nav.navigate("home") {
                     popUpTo("login") { inclusive = true }
                 }
             }
+        }
+        composable("home") {
+            val vm = viewModel<cn.zhuhedong.remote.viewmodel.ChatViewModel>(factory = VmFactory(app.hub))
+            cn.zhuhedong.remote.ui.home.HomeScreen(
+                vm = vm,
+                username = app.hub.username(),
+                onOpenWorkbench = { d -> nav.navigate("workbench/${d.id}?name=${android.net.Uri.encode(d.name)}") },
+                onLogout = {
+                    Thread { runCatching { app.hub.logout() } }.start()
+                    nav.navigate("login") { popUpTo(0) { inclusive = true } }
+                },
+            )
         }
         composable("instances") {
             val vm = viewModel<cn.zhuhedong.remote.viewmodel.InstancesViewModel>(factory = VmFactory(app.hub))

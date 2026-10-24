@@ -63,10 +63,12 @@ export interface BridgeDeps {
   linkState?: () => string | null;
   /** Sensitive ops policy */
   opsPolicy?: () => OpsPolicy;
+  /** A1 chat/models bridge over DSH sessionController (optional). */
+  chat?: import("./chat.js").ChatBridge;
   log?: { info: (m: string) => void; warn: (m: string) => void };
 }
 
-export const AGENT_CAP_VERSION = 1;
+export const AGENT_CAP_VERSION = 2;
 
 export const emptyObjectParams: Record<string, unknown> = {
   type: "object",

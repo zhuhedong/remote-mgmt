@@ -123,7 +123,7 @@ func (h *Hub) apiInstanceInvoke(w http.ResponseWriter, r *http.Request, a *authC
 		h.st.Audit(a.username, h.clientIP(r), "capability.invoke", id+"/"+in.ID, "reauth_required")
 		jsonOut(w, 401, map[string]any{
 			"ok": false, "requestId": in.RequestID,
-			"code": "REAUTH_REQUIRED",
+			"code":    "REAUTH_REQUIRED",
 			"message": "re-authenticate within the last 10 minutes (POST /api/me/reauth)",
 		})
 		return
@@ -140,8 +140,9 @@ func (h *Hub) apiInstanceInvoke(w http.ResponseWriter, r *http.Request, a *authC
 			params = p
 		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), invokeTimeout(in.ID))
 	defer cancel()
+	quiet := quietAudit(in.ID)
 	res, err := ag.Call(ctx, "capability.invoke", map[string]any{
 		"capability": in.ID,
 		"params":     params,
@@ -157,7 +158,9 @@ func (h *Hub) apiInstanceInvoke(w http.ResponseWriter, r *http.Request, a *authC
 	out := map[string]any{"requestId": in.RequestID, "ok": ok}
 	if ok {
 		out["data"] = res["data"]
-		h.st.Audit(a.username, h.clientIP(r), "capability.invoke", id+"/"+in.ID, "ok")
+		if !quiet {
+			h.st.Audit(a.username, h.clientIP(r), "capability.invoke", id+"/"+in.ID, "ok")
+		}
 		jsonOut(w, 200, out)
 		return
 	}
@@ -187,7 +190,6 @@ func (h *Hub) apiInstanceInvoke(w http.ResponseWriter, r *http.Request, a *authC
 	jsonOut(w, status, out)
 }
 
-
 // l0Permission maps known capability ids to ACL verbs (unknown → open; agent still validates).
 func l0Permission(capID string) string {
 	switch capID {
@@ -200,4 +202,33 @@ func l0Permission(capID string) string {
 	default:
 		return "open"
 	}
+}
+
+// capabilityRisk classifies capabilities for UI/audit: observe | normal | sensitive.
+// A1 chat.prompt and models.select are "normal": user-gestured, no reauth.
+func capabilityRisk(capID string) string {
+	if sensitiveCapability(capID) {
+		return "sensitive"
+	}
+	switch capID {
+	case "chat.prompt", "chat.session.create", "chat.cancel", "models.select":
+		return "normal"
+	}
+	return "observe"
+}
+
+// invokeTimeout bounds one Agent round trip. chat.follow is a long-poll (agent waits ≤20s).
+func invokeTimeout(capID string) time.Duration {
+	switch capID {
+	case "chat.follow":
+		return 28 * time.Second
+	case "chat.prompt", "models.list", "chat.sessions.list", "chat.history":
+		return 45 * time.Second
+	}
+	return 30 * time.Second
+}
+
+// quietAudit skips success audit rows for high-frequency read polls.
+func quietAudit(capID string) bool {
+	return capID == "chat.follow" || capID == "chat.history" || capID == "chat.sessions.list" || capID == "models.list"
 }

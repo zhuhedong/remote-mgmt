@@ -13,6 +13,8 @@ class HubRepository(private val store: SessionStore) {
 
     fun hubBase(): String = store.hubBase
 
+    fun username(): String? = store.username
+
     fun isLoggedIn(): Boolean = !store.cookieHeader.isNullOrBlank()
 
     /** Step 1: password → expects {totp:true} and sets pre cookie. */

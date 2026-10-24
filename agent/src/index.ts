@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { HubLink, localSso, metrics } from "./link.js";
-import { BridgeRouter, LogRing } from "./bridge/index.js";
+import { BridgeRouter, LogRing, ChatBridge } from "./bridge/index.js";
 import { pickStore, newDeviceKey, loadKey, KeyStore } from "./keystore.js";
 import { syncHostsFile } from "./hosts.js";
 import { redact, addSecret } from "./redact.js";
@@ -19,7 +19,7 @@ import { Config as ConfigSchema } from "./schema.js";
 export const name = "dsh-remote-agent";
 export { Config } from "./schema.js";
 export const PREFIX = "/dsh-remote-agent";
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 const LEGACY_HOSTS = ["dsh.cli-help.com"]; // adopted from dsh-cloudflare-tunnel (decision D8)
 
 const here = () => { try { return dirname(fileURLToPath(import.meta.url)); } catch { return process.cwd(); } };
@@ -97,6 +97,8 @@ export function apply(ctx: any, rawConfig: any) {
     } catch (e: any) { log.warn(`trustedHosts 更新失败: ${e.message}`); }
   };
 
+  let sessionCtl: any = null;
+  const chat = new ChatBridge(() => sessionCtl);
   let starting: Promise<void> | null = null;
   const startLink = (): Promise<void> => (starting ??= startLinkOnce().finally(() => { starting = null; }));
   const startLinkOnce = async () => {
@@ -127,6 +129,7 @@ export function apply(ctx: any, rawConfig: any) {
         plugin: VERSION,
       }),
       logs: { tail: (n) => logRing.tail(n) },
+      chat,
       local: () => local,
       linkState: () => (link ? link.state : null),
       opsPolicy: () => ({
@@ -216,6 +219,12 @@ export function apply(ctx: any, rawConfig: any) {
         if (typeof w.effect === "function") w.effect(run); else run();
       });
     } catch (e: any) { log.warn(`无法注入 webServer: ${e.message}`); }
+    try {
+      ctx.inject(["sessionController"], (c: any) => {
+        const run = () => { sessionCtl = c.sessionController || null; if (sessionCtl) log.info("A1: sessionController 已接入"); return () => { chat.dispose(); sessionCtl = null; }; };
+        if (typeof c.effect === "function") c.effect(run); else run();
+      });
+    } catch (e: any) { log.warn(`A1 sessionController 不可用: ${e.message}`); }
     try {
       ctx.inject(["connection", "webServer"], (c: any) => {
         const run = () => { connSvc = c.connection; const d = registerControlRoute(PREFIX, c.connection, c.webServer, handler); if (!d) log.warn("无法注册控制路由"); return () => { connSvc = null; if (typeof d === "function") d(); }; };

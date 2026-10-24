@@ -262,6 +262,7 @@ class VmFactory(private val hub: HubRepository, private val instanceId: String? 
             modelClass.isAssignableFrom(InstancesViewModel::class.java) -> InstancesViewModel(hub) as T
             modelClass.isAssignableFrom(WorkbenchViewModel::class.java) ->
                 WorkbenchViewModel(hub, instanceId ?: error("instanceId")) as T
+            modelClass.isAssignableFrom(ChatViewModel::class.java) -> ChatViewModel(hub) as T
             else -> error("unknown vm")
         }
     }

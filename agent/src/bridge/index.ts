@@ -1,4 +1,6 @@
 export { L0_CATALOG, listCapabilities, findCapability } from "./catalog.js";
+export { ChatBridge, applyEvent, chunkText, unwrap, type ChatMessage, type FollowState } from "./chat.js";
+export { L1_CATALOG } from "./catalog.js";
 export { BridgeRouter, handleControlMessage } from "./router.js";
 export { LogRing, clampLogLines, type LogEntry } from "./logs.js";
 export { checkServicesHealth, probeTcp, isLoopbackHost, normalizeProbeHost, type HealthReport, type HealthService, type LocalEndpoint } from "./health.js";

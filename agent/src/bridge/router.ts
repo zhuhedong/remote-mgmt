@@ -16,7 +16,11 @@ export class BridgeRouter {
   constructor(private deps: BridgeDeps) {}
 
   list(): CapListResult {
-    return listCapabilities();
+    return listCapabilities(this.l1());
+  }
+
+  private l1(): boolean {
+    try { return Boolean(this.deps.chat && this.deps.chat.available()); } catch { return false; }
   }
 
   cancel(requestId: string): boolean {
@@ -30,7 +34,7 @@ export class BridgeRouter {
     if (!requestId || typeof requestId !== "string") {
       return { ok: false, requestId: String(requestId || ""), code: "VALIDATION", message: "requestId required" };
     }
-    const desc = findCapability(capability);
+    const desc = findCapability(capability, this.l1());
     if (!desc) {
       return { ok: false, requestId, code: "NOT_FOUND", message: `unknown capability: ${capability}` };
     }
@@ -74,6 +78,14 @@ export class BridgeRouter {
         return this.facadeOps("plugin.reload", params);
       case "plugin.update":
         return this.facadeOps("plugin.update", params);
+      case "chat.sessions.list": return this.deps.chat!.sessionsList();
+      case "chat.session.create": return this.deps.chat!.sessionCreate(params);
+      case "chat.history": return this.deps.chat!.history(params);
+      case "chat.prompt": return this.deps.chat!.prompt(params);
+      case "chat.follow": return this.deps.chat!.follow(params);
+      case "chat.cancel": return this.deps.chat!.cancel(params);
+      case "models.list": return this.deps.chat!.modelsList(params);
+      case "models.select": return this.deps.chat!.modelsSelect(params);
       default:
         fail("NOT_FOUND", `unknown capability: ${id}`);
     }
