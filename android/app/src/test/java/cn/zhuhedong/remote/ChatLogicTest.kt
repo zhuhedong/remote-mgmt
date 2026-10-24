@@ -6,6 +6,7 @@ import cn.zhuhedong.remote.ui.home.ChatItem
 import cn.zhuhedong.remote.ui.home.MdBlock
 import cn.zhuhedong.remote.ui.home.groupChat
 import cn.zhuhedong.remote.ui.home.parseMarkdown
+import cn.zhuhedong.remote.viewmodel.ChatViewModel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -46,14 +47,14 @@ class ChatLogicTest {
         assertTrue(s[0].running)
         assertEquals("x", sp[0].name)
     }
-}
 
     @Test fun cwdMatchesPendingProject() {
-        assertTrue(cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches(null, "/a"))
-        assertTrue(cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches("/Users/code/app", "/Users/code/app"))
-        assertTrue(cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches("/Users/code/app/", "/Users/code/app"))
-        assertTrue(cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches("~/code/app", "/Users/code/code/app"))
-        assertTrue(cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches("~/code/app", "/Users/me/code/app"))
-        assertTrue(!cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches("/Users/code/a", "/Users/code/b"))
-        assertTrue(cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches("~/x", null)) // old agent
+        assertTrue(ChatViewModel.cwdMatches(null, "/a"))
+        assertTrue(ChatViewModel.cwdMatches("/Users/code/app", "/Users/code/app"))
+        assertTrue(ChatViewModel.cwdMatches("/Users/code/app/", "/Users/code/app"))
+        assertTrue(ChatViewModel.cwdMatches("~/code/app", "/Users/code/code/app"))
+        assertTrue(ChatViewModel.cwdMatches("~/code/app", "/Users/me/code/app"))
+        assertTrue(!ChatViewModel.cwdMatches("/Users/code/a", "/Users/code/b"))
+        assertTrue(ChatViewModel.cwdMatches("~/x", null)) // old agent
     }
+}
