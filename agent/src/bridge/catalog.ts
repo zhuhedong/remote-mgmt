@@ -139,6 +139,8 @@ function l1(id: string, title: string, description: string, properties: Record<s
 export const L1_CATALOG: CapabilityDescriptor[] = [
   l1("chat.sessions.list", "会话列表", "DSH 会话与 Spaces（按工作目录分组）", {}, [], "chat"),
   l1("chat.session.create", "新建会话", "新建 DSH 会话（可指定 cwd）", { cwd: { type: "string", maxLength: 1000 } }, [], "chat"),
+  l1("chat.session.rename", "重命名会话", "修改会话标题", { sessionId: sid, title: { type: "string", minLength: 1, maxLength: 200 } }, ["sessionId", "title"], "chat"),
+  l1("chat.session.delete", "删除会话", "删除一个 DSH 会话", { sessionId: sid }, ["sessionId"], "chat"),
   l1("chat.history", "会话历史", "按页读取会话消息", { sessionId: sid, maxMessages: { type: "integer", minimum: 1, maximum: 200 }, beforeSeq: { type: "integer", minimum: 0 } }, ["sessionId"], "chat"),
   l1("chat.prompt", "发送消息", "向会话发送一条消息（驱动 DSH agent loop）", { sessionId: sid, text: { type: "string", minLength: 1, maxLength: 20000 }, mode: { type: "string", enum: ["followup", "steer"] }, clientRequestId: { type: "string" } }, ["sessionId", "text"], "chat"),
   l1("chat.follow", "跟随回复", "长轮询会话状态（version 游标），流式文本在 live 字段", { sessionId: sid, version: { type: "integer" }, waitMs: { type: "integer", minimum: 0, maximum: 20000 } }, ["sessionId"], "chat", true),

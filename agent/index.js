@@ -5428,6 +5428,8 @@ function l1(id, title, description, properties, required, category, stream = fal
 var L1_CATALOG = [
   l1("chat.sessions.list", "\u4F1A\u8BDD\u5217\u8868", "DSH \u4F1A\u8BDD\u4E0E Spaces\uFF08\u6309\u5DE5\u4F5C\u76EE\u5F55\u5206\u7EC4\uFF09", {}, [], "chat"),
   l1("chat.session.create", "\u65B0\u5EFA\u4F1A\u8BDD", "\u65B0\u5EFA DSH \u4F1A\u8BDD\uFF08\u53EF\u6307\u5B9A cwd\uFF09", { cwd: { type: "string", maxLength: 1e3 } }, [], "chat"),
+  l1("chat.session.rename", "\u91CD\u547D\u540D\u4F1A\u8BDD", "\u4FEE\u6539\u4F1A\u8BDD\u6807\u9898", { sessionId: sid, title: { type: "string", minLength: 1, maxLength: 200 } }, ["sessionId", "title"], "chat"),
+  l1("chat.session.delete", "\u5220\u9664\u4F1A\u8BDD", "\u5220\u9664\u4E00\u4E2A DSH \u4F1A\u8BDD", { sessionId: sid }, ["sessionId"], "chat"),
   l1("chat.history", "\u4F1A\u8BDD\u5386\u53F2", "\u6309\u9875\u8BFB\u53D6\u4F1A\u8BDD\u6D88\u606F", { sessionId: sid, maxMessages: { type: "integer", minimum: 1, maximum: 200 }, beforeSeq: { type: "integer", minimum: 0 } }, ["sessionId"], "chat"),
   l1("chat.prompt", "\u53D1\u9001\u6D88\u606F", "\u5411\u4F1A\u8BDD\u53D1\u9001\u4E00\u6761\u6D88\u606F\uFF08\u9A71\u52A8 DSH agent loop\uFF09", { sessionId: sid, text: { type: "string", minLength: 1, maxLength: 2e4 }, mode: { type: "string", enum: ["followup", "steer"] }, clientRequestId: { type: "string" } }, ["sessionId", "text"], "chat"),
   l1("chat.follow", "\u8DDF\u968F\u56DE\u590D", "\u957F\u8F6E\u8BE2\u4F1A\u8BDD\u72B6\u6001\uFF08version \u6E38\u6807\uFF09\uFF0C\u6D41\u5F0F\u6587\u672C\u5728 live \u5B57\u6BB5", { sessionId: sid, version: { type: "integer" }, waitMs: { type: "integer", minimum: 0, maximum: 2e4 } }, ["sessionId"], "chat", true),
@@ -5647,6 +5649,20 @@ var ChatBridge = class {
     const sessionId = r?.sessionId ?? r?.session?.id ?? r?.id;
     if (!sessionId) fail("DSH_ERROR", "create \u672A\u8FD4\u56DE sessionId");
     return { sessionId, agentPreset: r?.agentPreset ?? null };
+  }
+  async sessionRename(params) {
+    const sessionId = reqSession(params);
+    const title = typeof params.title === "string" ? params.title.trim() : "";
+    if (!title) fail("BAD_REQUEST", "title \u4E0D\u80FD\u4E3A\u7A7A");
+    unwrap(await this.ctl().rename({ sessionId, title }));
+    return { sessionId, title };
+  }
+  async sessionDelete(params) {
+    const sessionId = reqSession(params);
+    this.followers.get(sessionId)?.close();
+    this.followers.delete(sessionId);
+    unwrap(await this.ctl().delete({ sessionId }));
+    return { sessionId, deleted: true };
   }
   async history(params) {
     const sessionId = reqSession(params);
@@ -6044,6 +6060,10 @@ var BridgeRouter = class {
         return this.deps.chat.sessionsList();
       case "chat.session.create":
         return this.deps.chat.sessionCreate(params);
+      case "chat.session.rename":
+        return this.deps.chat.sessionRename(params);
+      case "chat.session.delete":
+        return this.deps.chat.sessionDelete(params);
       case "chat.history":
         return this.deps.chat.history(params);
       case "chat.prompt":
@@ -6639,7 +6659,7 @@ var Config = Schema ? buildConfig(Schema) : void 0;
 // src/index.ts
 var name = "dsh-remote-agent";
 var PREFIX = "/dsh-remote-agent";
-var VERSION = "0.2.0";
+var VERSION = "0.2.1";
 var LEGACY_HOSTS = ["dsh.cli-help.com"];
 var here = () => {
   try {

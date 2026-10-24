@@ -80,6 +80,8 @@ export class BridgeRouter {
         return this.facadeOps("plugin.update", params);
       case "chat.sessions.list": return this.deps.chat!.sessionsList();
       case "chat.session.create": return this.deps.chat!.sessionCreate(params);
+      case "chat.session.rename": return this.deps.chat!.sessionRename(params);
+      case "chat.session.delete": return this.deps.chat!.sessionDelete(params);
       case "chat.history": return this.deps.chat!.history(params);
       case "chat.prompt": return this.deps.chat!.prompt(params);
       case "chat.follow": return this.deps.chat!.follow(params);

@@ -19,7 +19,7 @@ import { Config as ConfigSchema } from "./schema.js";
 export const name = "dsh-remote-agent";
 export { Config } from "./schema.js";
 export const PREFIX = "/dsh-remote-agent";
-export const VERSION = "0.2.0";
+export const VERSION = "0.2.1";
 const LEGACY_HOSTS = ["dsh.cli-help.com"]; // adopted from dsh-cloudflare-tunnel (decision D8)
 
 const here = () => { try { return dirname(fileURLToPath(import.meta.url)); } catch { return process.cwd(); } };

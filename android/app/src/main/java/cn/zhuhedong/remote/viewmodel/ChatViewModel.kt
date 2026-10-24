@@ -7,6 +7,8 @@ import cn.zhuhedong.remote.data.ChatParse
 import cn.zhuhedong.remote.data.ChatSession
 import cn.zhuhedong.remote.data.ChatSpace
 import cn.zhuhedong.remote.data.DeviceInstance
+import cn.zhuhedong.remote.data.Friendly
+import cn.zhuhedong.remote.data.FriendlyError
 import cn.zhuhedong.remote.data.HubRepository
 import cn.zhuhedong.remote.data.InvokeResult
 import cn.zhuhedong.remote.data.ModelOption
@@ -37,8 +39,16 @@ data class ChatUiState(
     val input: String = "",
     val models: List<ModelOption> = emptyList(),
     val model: ModelSel? = null,
-    val error: String? = null,
+    val error: FriendlyError? = null,
+    val devicesLoaded: Boolean = false,
+    val devicesError: FriendlyError? = null,
+    val caps: Set<String> = emptySet(),
+    val capsError: FriendlyError? = null,
+    val toast: String? = null,
+    val pendingSpace: String? = null,
 ) {
+    val canRename: Boolean get() = "chat.session.rename" in caps
+    val canDelete: Boolean get() = "chat.session.delete" in caps
     val current: ChatSession? get() = sessions.firstOrNull { it.sessionId == sessionId }
 }
 
@@ -55,12 +65,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         return withContext(Dispatchers.IO) { hub.invoke(dev.id, cap, params) }
     }
 
-    private fun errText(r: InvokeResult): String = when (r.code) {
-        "OFFLINE" -> "设备离线"
-        "NOT_FOUND" -> "远程插件版本过旧，请升级到 0.2.0+"
-        "UNAVAILABLE" -> r.message ?: "DSH 会话服务不可用"
-        else -> r.message ?: r.code ?: "请求失败"
-    }
+    private fun errText(r: InvokeResult): FriendlyError = Friendly.of(r)
 
     fun start() {
         if (_ui.value.devices.isNotEmpty()) return
@@ -73,21 +78,23 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
                 val list = withContext(Dispatchers.IO) { hub.listInstances() }
                 val keep = _ui.value.device?.let { d -> list.firstOrNull { it.id == d.id } }
                 val pick = keep ?: list.firstOrNull { it.online } ?: list.firstOrNull()
-                set { it.copy(devices = list, device = pick, error = null) }
+                set { it.copy(devices = list, device = pick, error = null, devicesLoaded = true, devicesError = null) }
                 if (pick != null && keep == null) selectDevice(pick) else refreshSessions()
             } catch (e: Exception) {
-                set { it.copy(error = e.message ?: "加载设备失败") }
+                set { it.copy(devicesLoaded = true, devicesError = Friendly.of(e)) }
             }
         }
     }
 
     fun selectDevice(d: DeviceInstance) {
         stopFollow()
-        set { it.copy(device = d, l1 = null, sessions = emptyList(), spaces = emptyList(), sessionId = null, messages = emptyList(), live = "", running = false, models = emptyList(), model = null) }
+        set { it.copy(device = d, l1 = null, caps = emptySet(), capsError = null, sessions = emptyList(), spaces = emptyList(), sessionId = null, messages = emptyList(), live = "", running = false, models = emptyList(), model = null) }
         viewModelScope.launch {
-            val caps = runCatching { withContext(Dispatchers.IO) { hub.capabilities(d.id) } }.getOrNull()
-            val has = caps?.capabilities?.any { it.id == "chat.prompt" } == true
-            set { it.copy(l1 = has, error = if (caps != null && !has) "该设备的远程插件还不支持对话（需升级到 0.2.0）" else null) }
+            val res = runCatching { withContext(Dispatchers.IO) { hub.capabilities(d.id) } }
+            val caps = res.getOrNull()
+            val ids = caps?.capabilities?.map { it.id }?.toSet().orEmpty()
+            val has = "chat.prompt" in ids
+            set { it.copy(l1 = if (caps == null) null else has, caps = ids, capsError = res.exceptionOrNull()?.let(Friendly::of)) }
             if (has) { refreshSessions(); loadModels() }
         }
     }
@@ -123,12 +130,12 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
     fun newTask() {
         stopFollow()
         pendingCwd = null
-        set { it.copy(sessionId = null, messages = emptyList(), live = "", running = false, error = null) }
+        set { it.copy(pendingSpace = null, sessionId = null, messages = emptyList(), live = "", running = false, error = null) }
     }
 
     private var pendingCwd: String? = null
 
-    fun newInSpace(cwd: String) { newTask(); pendingCwd = cwd }
+    fun newInSpace(cwd: String) { newTask(); pendingCwd = cwd; set { it.copy(pendingSpace = cwd) } }
 
     fun updateInput(s: String) = set { it.copy(input = s) }
 
@@ -144,7 +151,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
                 sid = r.data?.get("sessionId") as? String
                 if (!r.ok || sid == null) { set { it.copy(sending = false, error = errText(r)) }; return@launch }
                 pendingCwd = null
-                set { it.copy(sessionId = sid) }
+                set { it.copy(sessionId = sid, pendingSpace = null) }
                 startFollow(sid)
                 // carry the composer's chosen model into the new session
                 _ui.value.model?.let { m -> call("models.select", JSONObject().put("sessionId", sid).put("provider", m.provider).put("model", m.model)) }
@@ -174,11 +181,50 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         if (sid == null) return // applied on first send
         viewModelScope.launch {
             val r = call("models.select", JSONObject().put("sessionId", sid).put("provider", m.provider).put("model", m.id))
-            if (!r.ok) set { it.copy(model = prev, error = "切换模型失败：" + errText(r)) }
+            if (!r.ok) set { it.copy(model = prev, error = errText(r).let { e -> e.copy(title = "切换模型失败") }) }
         }
     }
 
+    /** Screenshot tests only: render a fixed state. */
+    fun seedForPreview(s: ChatUiState) { _ui.value = s }
+
     fun clearError() = set { it.copy(error = null) }
+    fun clearToast() = set { it.copy(toast = null) }
+
+    /** Retry whatever failed: device list, capability probe, or the current session. */
+    fun retry() {
+        val s = _ui.value
+        when {
+            s.devicesError != null || s.devices.isEmpty() -> refreshDevices()
+            s.device != null && (s.l1 != true) -> selectDevice(s.device)
+            else -> { refreshSessions(); s.sessionId?.let(::openSession) }
+        }
+    }
+
+    /** New-task sheet: optionally switch device, then start a blank task in [cwd]. */
+    fun startTask(device: DeviceInstance?, cwd: String?) {
+        if (device != null && device.id != _ui.value.device?.id) selectDevice(device)
+        newTask(); pendingCwd = cwd?.trim()?.ifBlank { null }
+        set { it.copy(pendingSpace = pendingCwd) }
+    }
+
+    fun renameSession(id: String, title: String) {
+        viewModelScope.launch {
+            val r = call("chat.session.rename", JSONObject().put("sessionId", id).put("title", title.trim()))
+            if (r.ok) { set { it.copy(toast = "已重命名") }; refreshSessions() } else set { it.copy(error = errText(r)) }
+        }
+    }
+
+    fun deleteSession(id: String) {
+        viewModelScope.launch {
+            val r = call("chat.session.delete", JSONObject().put("sessionId", id))
+            if (r.ok) {
+                if (_ui.value.sessionId == id) newTask()
+                set { it.copy(toast = "已删除", sessions = it.sessions.filterNot { s -> s.sessionId == id }) }
+                refreshSessions()
+            } else set { it.copy(error = errText(r)) }
+        }
+    }
 
     private fun startFollow(sid: String) {
         followJob?.cancel()
@@ -194,7 +240,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
                     if (!f.unchanged) {
                         version = f.version
                         val wasRunning = _ui.value.running
-                        set { it.copy(messages = f.messages, live = f.live, running = f.running || (it.sending), error = f.error ?: it.error) }
+                        set { it.copy(messages = f.messages, live = f.live, running = f.running || (it.sending), error = f.error?.let { m -> Friendly.of("DSH_ERROR", m) } ?: it.error) }
                         if (wasRunning && !f.running) refreshSessions()
                     }
                 } else {

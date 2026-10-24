@@ -12,8 +12,8 @@ android {
         applicationId = "cn.zhuhedong.remote"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-a0"
+        versionCode = 3
+        versionName = "0.3.0-a1"
         buildConfigField("String", "DEFAULT_HUB", "\"https://remote.zhuhedong.cn\"")
     }
 
@@ -35,6 +35,7 @@ android {
         compose = true
         buildConfig = true
     }
+    testOptions { unitTests.isIncludeAndroidResources = true }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }
 
@@ -53,4 +54,17 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+    // UI previews (Roborazzi): only run with -Pscreenshots, see docs/android-ui-pages-v3.md
+    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.32.2")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.32.2")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+tasks.withType<Test>().configureEach {
+    val shots = project.hasProperty("screenshots")
+    systemProperty("roborazzi.test.record", shots.toString())
+    systemProperty("shots.dir", rootProject.file("../docs/android-ui-v3").absolutePath)
+    if (!shots) exclude("**/ScreenshotTest*")
 }

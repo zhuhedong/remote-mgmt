@@ -229,6 +229,22 @@ export class ChatBridge {
     return { sessionId, agentPreset: r?.agentPreset ?? null };
   }
 
+  async sessionRename(params: Record<string, unknown>): Promise<unknown> {
+    const sessionId = reqSession(params);
+    const title = typeof params.title === "string" ? params.title.trim() : "";
+    if (!title) fail("BAD_REQUEST", "title 不能为空");
+    unwrap(await this.ctl().rename({ sessionId, title }));
+    return { sessionId, title };
+  }
+
+  async sessionDelete(params: Record<string, unknown>): Promise<unknown> {
+    const sessionId = reqSession(params);
+    this.followers.get(sessionId)?.close();
+    this.followers.delete(sessionId);
+    unwrap(await this.ctl().delete({ sessionId }));
+    return { sessionId, deleted: true };
+  }
+
   async history(params: Record<string, unknown>): Promise<unknown> {
     const sessionId = reqSession(params);
     const max = Math.min(Math.max(Number(params.maxMessages) || 50, 1), 200);

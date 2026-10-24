@@ -26,6 +26,15 @@ data class LoginUiState(
     val error: String? = null,
 )
 
+private fun loginErr(e: Exception, authMsg: String): String {
+    val f = cn.zhuhedong.remote.data.Friendly.of(e)
+    return when {
+        e is HubException && (e.httpStatus == 401 || e.httpStatus == 400 || e.httpStatus == 403) -> authMsg
+        e is HubException && e.httpStatus == 429 -> "尝试次数过多，请稍后再试"
+        else -> f.title + "：" + f.hint
+    }
+}
+
 class LoginViewModel(private val hub: HubRepository) : ViewModel() {
     private val _ui = MutableStateFlow(LoginUiState(hubBase = hub.hubBase()))
     val ui: StateFlow<LoginUiState> = _ui.asStateFlow()
@@ -44,7 +53,7 @@ class LoginViewModel(private val hub: HubRepository) : ViewModel() {
                 _ui.value = _ui.value.copy(loading = false, step = 2, password = "")
                 onNeedTotp()
             } catch (e: Exception) {
-                _ui.value = _ui.value.copy(loading = false, error = e.message ?: "login failed")
+                _ui.value = _ui.value.copy(loading = false, error = loginErr(e, "用户名或密码不正确"))
             }
         }
     }
@@ -58,7 +67,7 @@ class LoginViewModel(private val hub: HubRepository) : ViewModel() {
                 _ui.value = _ui.value.copy(loading = false, totp = "")
                 onSuccess()
             } catch (e: Exception) {
-                _ui.value = _ui.value.copy(loading = false, error = e.message ?: "TOTP failed")
+                _ui.value = _ui.value.copy(loading = false, error = loginErr(e, "验证码不正确或已过期，请等下一个码再试"))
             }
         }
     }
@@ -125,6 +134,9 @@ data class WorkbenchUiState(
     val reauthError: String? = null,
     val reauthBusy: Boolean = false,
     val confirmSensitive: PendingSensitive? = null,
+    val fatal: cn.zhuhedong.remote.data.FriendlyError? = null,
+    val cpuHist: List<Float> = emptyList(),
+    val memHist: List<Float> = emptyList(),
 )
 
 class WorkbenchViewModel(private val hub: HubRepository, private val instanceId: String) : ViewModel() {
@@ -133,7 +145,7 @@ class WorkbenchViewModel(private val hub: HubRepository, private val instanceId:
 
     fun load() {
         viewModelScope.launch {
-            _ui.value = _ui.value.copy(loading = true, error = null, offline = false, opResult = null)
+            _ui.value = _ui.value.copy(loading = true, error = null, offline = false, opResult = null, fatal = null)
             try {
                 val caps = withContext(Dispatchers.IO) { hub.capabilities(instanceId) }
                 val status = withContext(Dispatchers.IO) { hub.invoke(instanceId, "instance.status") }
@@ -151,6 +163,7 @@ class WorkbenchViewModel(private val hub: HubRepository, private val instanceId:
                     health = health,
                     offline = false,
                 )
+                pushSample(metrics)
             } catch (e: HubException) {
                 val offline = e.code == "OFFLINE" || e.httpStatus == 503 ||
                     e.message?.contains("OFFLINE", ignoreCase = true) == true
@@ -163,12 +176,42 @@ class WorkbenchViewModel(private val hub: HubRepository, private val instanceId:
                         "${e.code}: ${e.message}"
                     },
                     caps = null,
+                    fatal = cn.zhuhedong.remote.data.Friendly.of(e),
                 )
             } catch (e: Exception) {
-                _ui.value = _ui.value.copy(loading = false, error = e.message ?: "加载失败")
+                _ui.value = _ui.value.copy(loading = false, error = e.message ?: "加载失败", fatal = cn.zhuhedong.remote.data.Friendly.of(e))
             }
         }
     }
+
+    private fun num(v: Any?): Float? = when (v) { is Number -> v.toFloat(); is String -> v.toFloatOrNull(); else -> null }
+
+    private fun pushSample(r: InvokeResult) {
+        if (!r.ok) return
+        val d = r.data.orEmpty()
+        val s = _ui.value
+        _ui.value = s.copy(
+            cpuHist = (s.cpuHist + (num(d["cpu"]) ?: return)).takeLast(30),
+            memHist = (s.memHist + (num(d["memUsed"]) ?: 0f)).takeLast(30),
+        )
+    }
+
+    /** Light polling of instance.metrics while the device page is visible (sparkline data). */
+    private var pollJob: kotlinx.coroutines.Job? = null
+    fun pollMetrics() {
+        if (pollJob?.isActive == true) return
+        pollJob = viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(5000)
+                if (_ui.value.offline || _ui.value.fatal != null) continue
+                val r = runCatching { withContext(Dispatchers.IO) { hub.invoke(instanceId, "instance.metrics") } }.getOrNull() ?: continue
+                if (r.ok) { _ui.value = _ui.value.copy(metrics = r); pushSample(r) }
+            }
+        }
+    }
+
+    /** Screenshot tests only. */
+    fun seedForPreview(s: WorkbenchUiState) { _ui.value = s }
 
     fun updateReauth(block: (WorkbenchUiState) -> WorkbenchUiState) {
         _ui.value = block(_ui.value)

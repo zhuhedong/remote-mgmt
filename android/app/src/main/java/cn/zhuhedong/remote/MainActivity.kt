@@ -51,6 +51,7 @@ private fun AppNav(app: DshRemoteApp) {
             cn.zhuhedong.remote.ui.home.HomeScreen(
                 vm = vm,
                 username = app.hub.username(),
+                hubBase = app.hub.hubBase(),
                 onOpenWorkbench = { d -> nav.navigate("workbench/${d.id}?name=${android.net.Uri.encode(d.name)}") },
                 onLogout = {
                     Thread { runCatching { app.hub.logout() } }.start()
