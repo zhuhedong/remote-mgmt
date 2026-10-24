@@ -285,7 +285,13 @@ private fun ChatPane(vm: ChatViewModel, ui: ChatUiState, onMenu: () -> Unit, onN
         ui.toast?.let { Text(it, color = Muted, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
         val chatItems = remember(ui.messages, ui.live) { groupChat(ui.messages, ui.live) }
         val listState = rememberLazyListState()
-        LaunchedEffect(chatItems.size, ui.live.length) { if (chatItems.isNotEmpty()) listState.animateScrollToItem(chatItems.size) }
+        LaunchedEffect(chatItems.size, ui.live.length) {
+            if (chatItems.isEmpty()) return@LaunchedEffect
+            // Wait a frame so LazyColumn has laid out; never scroll past last index (resume crash).
+            kotlinx.coroutines.yield()
+            val last = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+            if (last > 0) runCatching { listState.animateScrollToItem(last) }
+        }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (chatItems.isEmpty()) ChatEmpty(ui, vm, Modifier.align(Alignment.Center))
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {

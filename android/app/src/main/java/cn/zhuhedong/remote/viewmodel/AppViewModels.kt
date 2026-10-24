@@ -189,10 +189,12 @@ class WorkbenchViewModel(private val hub: HubRepository, private val instanceId:
     private fun pushSample(r: InvokeResult) {
         if (!r.ok) return
         val d = r.data.orEmpty()
+        val cpu = num(d["cpu"]) ?: return
+        val mem = num(d["memUsed"]) ?: 0f
         val s = _ui.value
         _ui.value = s.copy(
-            cpuHist = (s.cpuHist + (num(d["cpu"]) ?: return)).takeLast(30),
-            memHist = (s.memHist + (num(d["memUsed"]) ?: 0f)).takeLast(30),
+            cpuHist = (s.cpuHist + cpu).takeLast(30),
+            memHist = (s.memHist + mem).takeLast(30),
         )
     }
 
@@ -202,10 +204,14 @@ class WorkbenchViewModel(private val hub: HubRepository, private val instanceId:
         if (pollJob?.isActive == true) return
         pollJob = viewModelScope.launch {
             while (true) {
-                kotlinx.coroutines.delay(5000)
-                if (_ui.value.offline || _ui.value.fatal != null) continue
-                val r = runCatching { withContext(Dispatchers.IO) { hub.invoke(instanceId, "instance.metrics") } }.getOrNull() ?: continue
-                if (r.ok) { _ui.value = _ui.value.copy(metrics = r); pushSample(r) }
+                try {
+                    kotlinx.coroutines.delay(5000)
+                    if (_ui.value.offline || _ui.value.fatal != null) continue
+                    val r = runCatching { withContext(Dispatchers.IO) { hub.invoke(instanceId, "instance.metrics") } }.getOrNull() ?: continue
+                    if (r.ok) { _ui.value = _ui.value.copy(metrics = r); pushSample(r) }
+                } catch (_: Exception) {
+                    // never crash the process from a metrics poll
+                }
             }
         }
     }

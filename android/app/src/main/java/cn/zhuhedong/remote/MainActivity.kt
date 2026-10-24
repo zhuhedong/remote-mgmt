@@ -5,7 +5,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -34,6 +41,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AppNav(app: DshRemoteApp) {
     val nav = rememberNavController()
+    // Stable start destination for this process; Navigation restores back stack on its own.
     val start = remember {
         if (app.hub.isLoggedIn()) "home" else "login"
     }
@@ -48,14 +56,40 @@ private fun AppNav(app: DshRemoteApp) {
         }
         composable("home") {
             val vm = viewModel<cn.zhuhedong.remote.viewmodel.ChatViewModel>(factory = VmFactory(app.hub))
+            val ui by vm.ui.collectAsState()
+            val lifecycleOwner = LocalLifecycleOwner.current
+            DisposableEffect(lifecycleOwner, vm) {
+                val obs = LifecycleEventObserver { _, event ->
+                    when (event) {
+                        Lifecycle.Event.ON_START -> vm.onAppForeground()
+                        Lifecycle.Event.ON_STOP -> vm.onAppBackground()
+                        else -> Unit
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(obs)
+                onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+            }
+            LaunchedEffect(ui.needsReLogin) {
+                if (ui.needsReLogin) {
+                    vm.clearNeedsReLogin()
+                    runCatching { app.hub.logout() }
+                    nav.navigate("login") {
+                        popUpTo(nav.graph.id) { inclusive = true }
+                    }
+                }
+            }
             cn.zhuhedong.remote.ui.home.HomeScreen(
                 vm = vm,
                 username = app.hub.username(),
                 hubBase = app.hub.hubBase(),
-                onOpenWorkbench = { d -> nav.navigate("workbench/${d.id}?name=${android.net.Uri.encode(d.name)}") },
+                onOpenWorkbench = { d ->
+                    nav.navigate("workbench/${d.id}?name=${android.net.Uri.encode(d.name)}")
+                },
                 onLogout = {
                     Thread { runCatching { app.hub.logout() } }.start()
-                    nav.navigate("login") { popUpTo(0) { inclusive = true } }
+                    nav.navigate("login") {
+                        popUpTo(nav.graph.id) { inclusive = true }
+                    }
                 },
             )
         }
@@ -66,7 +100,7 @@ private fun AppNav(app: DshRemoteApp) {
                 onOpen = { d -> nav.navigate("workbench/${d.id}?name=${android.net.Uri.encode(d.name)}") },
                 onLogout = {
                     nav.navigate("login") {
-                        popUpTo(0) { inclusive = true }
+                        popUpTo(nav.graph.id) { inclusive = true }
                     }
                 },
             )
@@ -78,7 +112,7 @@ private fun AppNav(app: DshRemoteApp) {
                 navArgument("name") { type = NavType.StringType; defaultValue = "工作台" },
             ),
         ) { entry ->
-            val id = entry.arguments?.getString("id")!!
+            val id = entry.arguments?.getString("id") ?: return@composable
             val name = entry.arguments?.getString("name") ?: "工作台"
             val vm = viewModel<cn.zhuhedong.remote.viewmodel.WorkbenchViewModel>(
                 factory = VmFactory(app.hub, id),

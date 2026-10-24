@@ -316,7 +316,7 @@ internal fun DiscoverTab(ui: ChatUiState, onUsePrompt: (String) -> Unit, onRetry
         DshCard {
             when {
                 ui.device == null -> Text("还没有选择电脑", color = Dsh.c.muted, fontSize = 14.sp)
-                ui.device.online.not() -> Text("电脑离线，连上后显示", color = Dsh.c.muted, fontSize = 14.sp)
+                ui.device?.online != true -> Text("电脑离线，连上后显示", color = Dsh.c.muted, fontSize = 14.sp)
                 ui.caps.isEmpty() -> Text(if (ui.capsError != null) ui.capsError.title else "正在读取…", color = Dsh.c.muted, fontSize = 14.sp)
                 else -> FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     ui.caps.sorted().forEach { id -> Pill(CapNames[id] ?: id, Dsh.c.ink, Dsh.c.code) }

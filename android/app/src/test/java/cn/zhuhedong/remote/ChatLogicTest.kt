@@ -57,4 +57,31 @@ class ChatLogicTest {
         assertTrue(!ChatViewModel.cwdMatches("/Users/code/a", "/Users/code/b"))
         assertTrue(ChatViewModel.cwdMatches("~/x", null)) // old agent
     }
+
+    @Test fun sessionDisplayTitle() {
+        val blank = cn.zhuhedong.remote.data.ChatSession("abcdef012345", null, null, null, 0, false, true)
+        assertEquals("新任务", blank.displayTitle())
+        val titled = blank.copy(title = "日报", blank = false)
+        assertEquals("日报", titled.displayTitle())
+        val untitled = blank.copy(blank = false, title = null)
+        assertEquals("会话 abcdef01", untitled.displayTitle())
+    }
+
+    @Test fun followUnchangedAndEmpty() {
+        val u = ChatParse.follow(mapOf("unchanged" to true, "version" to 3))
+        assertTrue(u.unchanged)
+        assertEquals(3, u.version)
+        val empty = ChatParse.follow(null)
+        assertEquals(0, empty.messages.size)
+        assertEquals("", empty.live)
+    }
+
+    @Test fun groupChatSkipsBlankAssistant() {
+        val items = groupChat(listOf(
+            ChatMsg(1, "assistant", ""),
+            ChatMsg(2, "user", "hi"),
+        ), "")
+        assertEquals(1, items.size)
+        assertTrue(items[0] is ChatItem.User)
+    }
 }

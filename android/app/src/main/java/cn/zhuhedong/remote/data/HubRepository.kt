@@ -107,6 +107,15 @@ class HubRepository(private val store: SessionStore) {
                 message = e.message,
                 httpStatus = e.httpStatus,
             )
+        } catch (e: Exception) {
+            val he = HubClient.mapTransport(e)
+            InvokeResult(
+                ok = false,
+                requestId = requestId,
+                code = he.code,
+                message = he.message,
+                httpStatus = he.httpStatus,
+            )
         }
     }
 

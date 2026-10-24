@@ -13,3 +13,10 @@ android/captures/
 android/.cxx/
 *.apk
 *.aab
+
+# Android signing (never commit)
+android/keystore.properties
+android/keystore/
+*.jks
+*.p12
+*.keystore

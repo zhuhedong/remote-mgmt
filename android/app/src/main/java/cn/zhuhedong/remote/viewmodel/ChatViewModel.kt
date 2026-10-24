@@ -49,6 +49,8 @@ data class ChatUiState(
     /** Absolute or ~/… path chosen for the next create; kept in UI state so it can't desync from [pendingSpace]. */
     val pendingCwd: String? = null,
     val pendingSpace: String? = null,
+    /** Set when Hub returns 401 so the shell can route to login. */
+    val needsReLogin: Boolean = false,
 ) {
     val canRename: Boolean get() = "chat.session.rename" in caps
     val canDelete: Boolean get() = "chat.session.delete" in caps
@@ -60,12 +62,28 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
     val ui: StateFlow<ChatUiState> = _ui.asStateFlow()
     private var followJob: Job? = null
     private var version = -1
+    /** When false (app in background), follow loop sleeps instead of long-polling. */
+    @Volatile private var foreground = true
 
     private fun set(f: (ChatUiState) -> ChatUiState) { _ui.value = f(_ui.value) }
 
     private suspend fun call(cap: String, params: JSONObject = JSONObject()): InvokeResult {
         val dev = _ui.value.device ?: return InvokeResult(false, "", code = "NO_DEVICE", message = "未选择设备")
-        return withContext(Dispatchers.IO) { hub.invoke(dev.id, cap, params) }
+        return withContext(Dispatchers.IO) {
+            try {
+                hub.invoke(dev.id, cap, params)
+            } catch (e: Exception) {
+                InvokeResult(false, "", code = "NETWORK", message = e.message ?: "network error", httpStatus = 0)
+            }
+        }
+    }
+
+    private fun noteAuth(r: InvokeResult): Boolean {
+        if (r.httpStatus == 401 || r.code == "UNAUTHORIZED" || r.code == "HTTP_401") {
+            set { it.copy(needsReLogin = true, error = Friendly.of(r)) }
+            return true
+        }
+        return false
     }
 
     private fun errText(r: InvokeResult): FriendlyError = Friendly.of(r)
@@ -75,17 +93,60 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         refreshDevices()
     }
 
+    /** Called when Activity returns to foreground: refresh devices and resume follow safely. */
+    fun onAppForeground() {
+        foreground = true
+        viewModelScope.launch {
+            try {
+                refreshDevicesQuiet()
+                val sid = _ui.value.sessionId
+                if (sid != null && (followJob == null || followJob?.isActive != true)) {
+                    startFollow(sid)
+                }
+            } catch (e: Exception) {
+                set { it.copy(error = Friendly.of(e)) }
+            }
+        }
+    }
+
+    fun onAppBackground() {
+        foreground = false
+    }
+
     fun refreshDevices() {
         viewModelScope.launch {
             try {
                 val list = withContext(Dispatchers.IO) { hub.listInstances() }
                 val keep = _ui.value.device?.let { d -> list.firstOrNull { it.id == d.id } }
                 val pick = keep ?: list.firstOrNull { it.online } ?: list.firstOrNull()
-                set { it.copy(devices = list, device = pick, error = null, devicesLoaded = true, devicesError = null) }
+                set { it.copy(devices = list, device = pick, error = null, devicesLoaded = true, devicesError = null, needsReLogin = false) }
                 if (pick != null && keep == null) selectDevice(pick) else refreshSessions()
             } catch (e: Exception) {
-                set { it.copy(devicesLoaded = true, devicesError = Friendly.of(e)) }
+                val fe = Friendly.of(e)
+                set {
+                    it.copy(
+                        devicesLoaded = true,
+                        devicesError = fe,
+                        needsReLogin = fe.kind == ErrKind.AUTH,
+                    )
+                }
             }
+        }
+    }
+
+    /** Soft refresh used on resume — keep current device selection, don't reset chat. */
+    private suspend fun refreshDevicesQuiet() {
+        try {
+            val list = withContext(Dispatchers.IO) { hub.listInstances() }
+            val keep = _ui.value.device?.let { d -> list.firstOrNull { it.id == d.id } }
+            val pick = keep ?: _ui.value.device ?: list.firstOrNull { it.online } ?: list.firstOrNull()
+            set { it.copy(devices = list, device = pick, devicesLoaded = true, devicesError = null) }
+            if (pick != null && _ui.value.l1 == null) selectDevice(pick)
+            else if (_ui.value.l1 == true) refreshSessions()
+        } catch (e: Exception) {
+            val fe = Friendly.of(e)
+            if (fe.kind == ErrKind.AUTH) set { it.copy(needsReLogin = true, devicesError = fe) }
+            // swallow network blips on resume — follow loop will surface them
         }
     }
 
@@ -97,7 +158,8 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
             val caps = res.getOrNull()
             val ids = caps?.capabilities?.map { it.id }?.toSet().orEmpty()
             val has = "chat.prompt" in ids
-            set { it.copy(l1 = if (caps == null) null else has, caps = ids, capsError = res.exceptionOrNull()?.let(Friendly::of)) }
+            val err = res.exceptionOrNull()?.let(Friendly::of)
+            set { it.copy(l1 = if (caps == null) null else has, caps = ids, capsError = err, needsReLogin = err?.kind == ErrKind.AUTH) }
             if (has) { refreshSessions(); loadModels() }
         }
     }
@@ -107,6 +169,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         viewModelScope.launch {
             set { it.copy(loadingList = true) }
             val r = call("chat.sessions.list")
+            if (noteAuth(r)) { set { it.copy(loadingList = false) }; return@launch }
             if (r.ok) {
                 val (s, sp) = ChatParse.sessions(r.data)
                 set { it.copy(sessions = s, spaces = sp, loadingList = false) }
@@ -118,6 +181,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         viewModelScope.launch {
             val p = JSONObject(); _ui.value.sessionId?.let { p.put("sessionId", it) }
             val r = call("models.list", p)
+            if (noteAuth(r)) return@launch
             if (r.ok) { val (m, cur) = ChatParse.models(r.data); set { it.copy(models = m, model = cur ?: it.model) } }
         }
     }
@@ -153,6 +217,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
                 val want = _ui.value.pendingCwd
                 val p = JSONObject(); want?.let { p.put("cwd", it) }
                 val r = call("chat.session.create", p)
+                if (noteAuth(r)) { set { it.copy(sending = false) }; return@launch }
                 sid = r.data?.get("sessionId") as? String
                 if (!r.ok || sid == null) { set { it.copy(sending = false, error = errText(r)) }; return@launch }
                 val got = r.data?.get("cwd") as? String
@@ -180,6 +245,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
             val optimistic = ChatMsg(Long.MAX_VALUE, "user", text)
             set { it.copy(input = "", messages = it.messages + optimistic, running = true) }
             val r = call("chat.prompt", JSONObject().put("sessionId", sid).put("text", text))
+            if (noteAuth(r)) { set { it.copy(sending = false, running = false, input = text, messages = it.messages - optimistic) }; return@launch }
             set { it.copy(sending = false, error = if (r.ok) null else errText(r), running = r.ok) }
             if (!r.ok) set { it.copy(input = text, messages = it.messages - optimistic) }
             refreshSessions()
@@ -190,7 +256,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         val sid = _ui.value.sessionId ?: return
         viewModelScope.launch {
             val r = call("chat.cancel", JSONObject().put("sessionId", sid))
-            if (!r.ok) set { it.copy(error = errText(r)) }
+            if (!r.ok && !noteAuth(r)) set { it.copy(error = errText(r)) }
         }
     }
 
@@ -202,7 +268,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         if (sid == null) return // applied on first send
         viewModelScope.launch {
             val r = call("models.select", JSONObject().put("sessionId", sid).put("provider", m.provider).put("model", m.id))
-            if (!r.ok) set { it.copy(model = prev, error = errText(r).let { e -> e.copy(title = "切换模型失败") }) }
+            if (!r.ok && !noteAuth(r)) set { it.copy(model = prev, error = errText(r).let { e -> e.copy(title = "切换模型失败") }) }
         }
     }
 
@@ -211,6 +277,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
 
     fun clearError() = set { it.copy(error = null) }
     fun clearToast() = set { it.copy(toast = null) }
+    fun clearNeedsReLogin() = set { it.copy(needsReLogin = false) }
 
     /** Retry whatever failed: device list, capability probe, or the current session. */
     fun retry() {
@@ -233,6 +300,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
     fun renameSession(id: String, title: String) {
         viewModelScope.launch {
             val r = call("chat.session.rename", JSONObject().put("sessionId", id).put("title", title.trim()))
+            if (noteAuth(r)) return@launch
             if (r.ok) { set { it.copy(toast = "已重命名") }; refreshSessions() } else set { it.copy(error = errText(r)) }
         }
     }
@@ -240,6 +308,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
     fun deleteSession(id: String) {
         viewModelScope.launch {
             val r = call("chat.session.delete", JSONObject().put("sessionId", id))
+            if (noteAuth(r)) return@launch
             if (r.ok) {
                 if (_ui.value.sessionId == id) newTask()
                 set { it.copy(toast = "已删除", sessions = it.sessions.filterNot { s -> s.sessionId == id }) }
@@ -254,20 +323,47 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         followJob = viewModelScope.launch {
             var backoff = 1000L
             while (isActive && _ui.value.sessionId == sid) {
-                val r = call("chat.follow", JSONObject().put("sessionId", sid).put("version", version).put("waitMs", 15000))
+                // Pause long-poll while backgrounded — OS often kills the socket and an
+                // uncaught failure used to take down the whole process on resume.
+                if (!foreground) {
+                    delay(500)
+                    continue
+                }
+                val r = try {
+                    call("chat.follow", JSONObject().put("sessionId", sid).put("version", version).put("waitMs", 15000))
+                } catch (e: Exception) {
+                    InvokeResult(false, "", code = "NETWORK", message = e.message, httpStatus = 0)
+                }
                 if (_ui.value.sessionId != sid) break
+                if (noteAuth(r)) break
                 if (r.ok) {
                     backoff = 1000L
-                    val f = ChatParse.follow(r.data)
+                    val f = try {
+                        ChatParse.follow(r.data)
+                    } catch (e: Exception) {
+                        set { it.copy(error = Friendly.of(e)) }
+                        delay(backoff)
+                        continue
+                    }
                     if (!f.unchanged) {
                         version = f.version
                         val wasRunning = _ui.value.running
-                        set { it.copy(messages = f.messages, live = f.live, running = f.running || (it.sending), error = f.error?.let { m -> Friendly.of("DSH_ERROR", m) } ?: it.error) }
+                        set {
+                            it.copy(
+                                messages = f.messages,
+                                live = f.live,
+                                running = f.running || it.sending,
+                                error = f.error?.let { m -> Friendly.of("DSH_ERROR", m) } ?: it.error,
+                            )
+                        }
                         if (wasRunning && !f.running) refreshSessions()
                     }
                 } else {
-                    set { it.copy(error = errText(r)) }
-                    delay(backoff); backoff = (backoff * 2).coerceAtMost(15000L)
+                    // Soft network errors during follow: backoff without clearing the transcript.
+                    val soft = r.code == "NETWORK" || r.code == "TIMEOUT" || r.code == "NO_DEVICE"
+                    if (!soft) set { it.copy(error = errText(r)) }
+                    delay(backoff)
+                    backoff = (backoff * 2).coerceAtMost(15000L)
                 }
             }
         }

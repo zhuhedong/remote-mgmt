@@ -50,7 +50,7 @@ jobs:
         run: npm test
 
   android:
-    name: Android (debug APK)
+    name: Android (test + APK)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -69,7 +69,7 @@ jobs:
         uses: android-actions/setup-android@v3
         with:
           packages: platform-tools platforms;android-35 build-tools;35.0.0
-      - name: Assemble debug
+      - name: Unit tests + debug APK
         run: |
           chmod +x gradlew
           ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon --stacktrace
@@ -79,4 +79,45 @@ jobs:
           name: app-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
+          if-no-files-found: error
+      - name: Decide release signing
+        id: sign
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] \
+            && [ "${{ github.ref }}" = "refs/heads/master" ] \
+            && [ -n "$ANDROID_KEYSTORE_BASE64" ] \
+            && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] \
+            && [ -n "$ANDROID_KEY_ALIAS" ] \
+            && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            echo "do=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "do=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Assemble signed release APK
+        if: steps.sign.outputs.do == 'true'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/release.keystore
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace \
+            -Pandroid.injected.signing.store.file=/tmp/release.keystore \
+            -Pandroid.injected.signing.store.password="$ANDROID_KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$ANDROID_KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD"
+          shred -u /tmp/release.keystore 2>/dev/null || rm -f /tmp/release.keystore
+      - name: Upload signed release APK
+        if: steps.sign.outputs.do == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 30
           if-no-files-found: error
