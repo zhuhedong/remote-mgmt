@@ -1,25 +1,41 @@
 # DSH Remote · Android（A0.5 起步）
 
-Kotlin + Jetpack Compose 原生壳：**登录 → 实例列表 → 工作台（capabilities + `instance.status`）**。
+Kotlin + Jetpack Compose 原生壳：**登录 → 实例列表 → 工作台（capabilities + invoke）**。
 
-> **本仓库 CI / 云端盒子当前没有 Android SDK / JDK，这里是可打开的源码工程，不是已编好的 APK。**  
-> 请在本机用 **Android Studio Ladybug+**（或带 JDK 17 的命令行）打开本目录编译。
+## CI 自动编 APK
 
-## 打开与编译
+本仓库已接 GitHub Actions：
 
-1. 安装 [Android Studio](https://developer.android.com/studio)，勾选 Android SDK 35、Build-Tools。
-2. **File → Open** 选择 `remote-mgmt/android/`（本目录）。
-3. 等待 Gradle Sync（首次会下载 Gradle 8.9 与依赖）。
-4. 选一台模拟器或真机，Run `app`。
-5. 命令行（本机有 SDK 时）：
+| 触发 | Workflow | 产物 |
+|------|----------|------|
+| push / PR → `master` | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | **debug APK** 上传为 artifact `app-debug`（保留 14 天） |
+| push tag `v*`，或 Actions → **Release** 手动跑 | [`.github/workflows/release.yml`](../.github/workflows/release.yml) | [GitHub Releases](https://github.com/zhuhedong/remote-mgmt/releases) 附 Hub 二进制、Agent tgz、APK、`SHA256SUMS` |
+
+下载：
+
+1. **日常调试包**：打开仓库 [Actions](https://github.com/zhuhedong/remote-mgmt/actions) → 选中一次成功的 **CI** → Artifacts → `app-debug`
+2. **发版包**：打开 [Releases](https://github.com/zhuhedong/remote-mgmt/releases) → 选版本下载 APK（未配置签名 secrets 时仍为 **debug** APK，release notes 会写明）
+
+本地编译（可选）：
 
 ```bash
-cd remote-mgmt/android
-# 若缺少 gradlew 脚本，可在 Android Studio 里 Sync 一次自动生成，或：
-# gradle wrapper --gradle-version 8.9
+cd android
 ./gradlew :app:assembleDebug
 # APK: app/build/outputs/apk/debug/app-debug.apk
 ```
+
+需要 JDK 17 + Android SDK 35。仓库已含完整 Gradle Wrapper（8.9）。不要提交 `local.properties`。
+
+### Release 签名（可选）
+
+在仓库 Settings → Secrets 配置后，Release workflow 会打 **signed release** APK：
+
+- `ANDROID_KEYSTORE_BASE64`
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+
+未配置时自动退回 `assembleDebug`。
 
 ## 功能（A0 L0）
 
@@ -39,7 +55,7 @@ cd remote-mgmt/android
 
 - EncryptedSharedPreferences / Keystore
 - 证书锁定、侧载更新检查
-- 单元测试 / CI 编 APK（本环境无 Android SDK）
+- 单元测试
 
 ## 包名
 

@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create/publish (e.g. v0.1.0-a0). Leave empty to use the pushed tag only."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            echo "No tag: push a v* tag or pass workflow_dispatch input tag" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hub/go.mod
+          cache-dependency-path: hub/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            android/**/*.gradle*
+            android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-35 build-tools;35.0.0
+
+      - name: Build Hub (linux/amd64)
+        working-directory: hub
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags "-s -w" \
+            -o dist/remote-hub-linux-amd64 .
+          cp dist/remote-hub-linux-amd64 "$GITHUB_WORKSPACE/remote-hub-linux-amd64"
+
+      - name: Build & pack Agent
+        working-directory: agent
+        run: |
+          npm ci
+          npm test
+          npm run pack
+          TGZ=$(ls -1 dist/dsh-remote-agent-*.tgz | head -1)
+          cp "$TGZ" "$GITHUB_WORKSPACE/$(basename "$TGZ")"
+          echo "AGENT_TGZ=$(basename "$TGZ")" >> "$GITHUB_ENV"
+
+      - name: Decide Android build type
+        id: android
+        run: |
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ] \
+            && [ -n "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" ] \
+            && [ -n "${{ secrets.ANDROID_KEY_ALIAS }}" ] \
+            && [ -n "${{ secrets.ANDROID_KEY_PASSWORD }}" ]; then
+            echo "build=release" >> "$GITHUB_OUTPUT"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=debug" >> "$GITHUB_OUTPUT"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Assemble Android APK (signed release)
+        if: steps.android.outputs.signed == 'true'
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/release.keystore
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace \
+            -Pandroid.injected.signing.store.file=/tmp/release.keystore \
+            -Pandroid.injected.signing.store.password="$ANDROID_KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$ANDROID_KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD"
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/app-release.apk"
+          echo "APK_NAME=app-release.apk" >> "$GITHUB_ENV"
+          shred -u /tmp/release.keystore 2>/dev/null || rm -f /tmp/release.keystore
+
+      - name: Assemble Android APK (debug, unsigned release secrets)
+        if: steps.android.outputs.signed != 'true'
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/app-debug.apk"
+          echo "APK_NAME=app-debug.apk" >> "$GITHUB_ENV"
+
+      - name: Checksums
+        run: |
+          sha256sum remote-hub-linux-amd64 "$AGENT_TGZ" "$APK_NAME" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          SIGNED: ${{ steps.android.outputs.signed }}
+        run: |
+          NOTES=$(mktemp)
+          {
+            echo "## remote-mgmt ${TAG}"
+            echo
+            echo "Artifacts:"
+            echo "- \`remote-hub-linux-amd64\` — Hub static binary (linux/amd64, CGO off)"
+            echo "- \`${AGENT_TGZ}\` — DSH plugin tarball (\`npm pack\`)"
+            if [ "$SIGNED" = "true" ]; then
+              echo "- \`${APK_NAME}\` — Android **signed release** APK"
+            else
+              echo "- \`${APK_NAME}\` — Android **debug** APK (no release keystore secrets configured: \`ANDROID_KEYSTORE_BASE64\`, \`ANDROID_KEYSTORE_PASSWORD\`, \`ANDROID_KEY_ALIAS\`, \`ANDROID_KEY_PASSWORD\`)"
+            fi
+            echo "- \`SHA256SUMS\` — checksums"
+            echo
+            echo "Install Hub binary on the server; install the agent tgz into DSH Desktop web profile; side-load the APK."
+          } > "$NOTES"
+
+          # Create tag on HEAD if this is workflow_dispatch without an existing tag ref
+          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              remote-hub-linux-amd64 "$AGENT_TGZ" "$APK_NAME" SHA256SUMS \
+              --clobber
+            gh release edit "$TAG" --notes-file "$NOTES"
+          else
+            gh release create "$TAG" \
+              remote-hub-linux-amd64 "$AGENT_TGZ" "$APK_NAME" SHA256SUMS \
+              --title "remote-mgmt ${TAG}" \
+              --notes-file "$NOTES"
+          fi
