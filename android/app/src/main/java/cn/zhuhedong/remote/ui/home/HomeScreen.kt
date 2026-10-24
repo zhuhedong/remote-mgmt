@@ -130,7 +130,7 @@ fun HomeScreen(
             when (tab) {
                 0 -> TasksTab(vm, ui)
                 1 -> ScheduleTab(ui, onGoChat = { tab = 0 })
-                2 -> DiscoverTab(ui, onUsePrompt = { vm.newTask(); vm.updateInput(it); tab = 0 }, onRetry = vm::retry)
+                2 -> DiscoverTab(ui, onUsePrompt = { if (ui.sessionId != null) vm.newTask(); vm.updateInput(it); tab = 0 }, onRetry = vm::retry)
                 else -> ProfileTab(ui, username, hubBase, onOpenWorkbench, onLogout, onRefresh = vm::refreshDevices)
             }
         }
@@ -155,7 +155,7 @@ private fun TasksTab(vm: ChatViewModel, ui: ChatUiState) {
             }
         },
     ) {
-        ChatPane(vm, ui, onMenu = { scope.launch { drawer.open() } })
+        ChatPane(vm, ui, onMenu = { scope.launch { drawer.open() } }, onNew = { newSheet = true })
     }
 }
 
@@ -242,7 +242,7 @@ private fun SessionRow(s: ChatSession, selected: Boolean, indent: Boolean, onCli
 }
 
 @Composable
-private fun ChatPane(vm: ChatViewModel, ui: ChatUiState, onMenu: () -> Unit) {
+private fun ChatPane(vm: ChatViewModel, ui: ChatUiState, onMenu: () -> Unit, onNew: () -> Unit) {
     var more by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
@@ -267,7 +267,7 @@ private fun ChatPane(vm: ChatViewModel, ui: ChatUiState, onMenu: () -> Unit) {
             }
             Surface(shape = RoundedCornerShape(24.dp), color = Dsh.c.card, modifier = Modifier.border(1.dp, CardBorder, RoundedCornerShape(24.dp))) {
                 Row {
-                    IconButton(onClick = vm::newTask) { Icon(Icons.Filled.AddComment, "新对话", tint = Ink) }
+                    IconButton(onClick = onNew) { Icon(Icons.Filled.AddComment, "新对话", tint = Ink) }
                     Box {
                         IconButton(onClick = { more = true }) { Icon(Icons.Filled.MoreHoriz, "更多", tint = Ink) }
                         DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
@@ -295,7 +295,7 @@ private fun ChatPane(vm: ChatViewModel, ui: ChatUiState, onMenu: () -> Unit) {
                 item { Spacer(Modifier.height(8.dp)) }
             }
         }
-        Composer(vm, ui)
+        Composer(vm, ui, onNew = onNew)
     }
 }
 
@@ -377,7 +377,7 @@ fun MarkdownText(text: String) {
 }
 
 @Composable
-private fun Composer(vm: ChatViewModel, ui: ChatUiState) {
+private fun Composer(vm: ChatViewModel, ui: ChatUiState, onNew: () -> Unit) {
     var modelMenu by remember { mutableStateOf(false) }
     var voiceHint by remember { mutableStateOf(false) }
     val enabled = ui.l1 == true && ui.device?.online == true
@@ -404,7 +404,7 @@ private fun Composer(vm: ChatViewModel, ui: ChatUiState) {
                     }
                     if (modelMenu) ModelSheet(ui, onDismiss = { modelMenu = false }) { modelMenu = false; vm.selectModel(it) }
                 }
-                IconButton(onClick = vm::newTask) { Icon(Icons.Filled.Add, "新建", tint = Ink) }
+                IconButton(onClick = onNew) { Icon(Icons.Filled.Add, "新建", tint = Ink) }
                 val canSend = enabled && ui.input.isNotBlank() && !ui.sending
                 Surface(
                     onClick = { if (ui.running && ui.input.isBlank()) vm.stop() else vm.send() },

@@ -80,7 +80,7 @@ import cn.zhuhedong.remote.ui.theme.Dsh
 import cn.zhuhedong.remote.viewmodel.ChatUiState
 import cn.zhuhedong.remote.viewmodel.ChatViewModel
 
-/** Quick-start prompts shown on the empty chat and in 发现. They are sent as normal chat messages. */
+/** Quick-start prompts shown on the empty chat and in 发现. Chips only fill the input; they never auto-send. */
 internal val QuickPrompts = listOf(
     "总结一下这个项目的结构" to "项目",
     "帮我看看最近的 git 改动" to "代码",
@@ -118,7 +118,7 @@ internal fun ChatEmpty(ui: ChatUiState, vm: ChatViewModel, modifier: Modifier) {
             else -> Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("有什么可以帮你？", fontSize = 24.sp, fontWeight = FontWeight.SemiBold, color = Dsh.c.ink)
                 Spacer(Modifier.height(6.dp))
-                Text(ui.pendingSpace?.let { "将在 ${it.substringAfterLast('/')} 中新建任务" } ?: "消息会发到 ${dev?.name ?: "DSH"} 上执行", color = Dsh.c.muted, fontSize = 13.sp)
+                Text((ui.pendingCwd ?: ui.pendingSpace)?.let { "将在 ${it.substringAfterLast('/')} 中新建任务" } ?: "消息会发到 ${dev?.name ?: "DSH"} 上执行", color = Dsh.c.muted, fontSize = 13.sp)
                 Spacer(Modifier.height(20.dp))
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     QuickPrompts.take(4).forEach { (p, _) ->
@@ -168,7 +168,9 @@ internal fun ModelSheet(ui: ChatUiState, onDismiss: () -> Unit, onPick: (ModelOp
 @Composable
 internal fun NewTaskSheet(ui: ChatUiState, onDismiss: () -> Unit, onStart: (DeviceInstance?, String?) -> Unit) {
     var dev by remember { mutableStateOf(ui.device) }
-    var cwd by remember { mutableStateOf<String?>(null) }
+    val initialSpaces = if (ui.device != null) ui.spaces else emptyList()
+    val defaultCwd = ui.pendingCwd ?: initialSpaces.firstOrNull()?.cwd
+    var cwd by remember { mutableStateOf<String?>(defaultCwd) }
     var custom by remember { mutableStateOf("") }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Dsh.c.card) {
         Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp).verticalScroll(rememberScrollState())) {
@@ -177,7 +179,12 @@ internal fun NewTaskSheet(ui: ChatUiState, onDismiss: () -> Unit, onStart: (Devi
             ui.devices.forEach { d ->
                 val sel = d.id == dev?.id
                 Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(if (sel) Dsh.c.selected else Dsh.c.card)
-                    .clickable(enabled = d.online) { dev = d; cwd = null }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    .clickable(enabled = d.online) {
+                        dev = d
+                        val sp = if (d.id == ui.device?.id) ui.spaces else emptyList()
+                        cwd = ui.pendingCwd?.takeIf { d.id == ui.device?.id } ?: sp.firstOrNull()?.cwd
+                        custom = ""
+                    }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Computer, null, tint = if (d.online) Dsh.c.ink else Dsh.c.muted)
                     Spacer(Modifier.width(10.dp))
                     Text(d.name, color = if (d.online) Dsh.c.ink else Dsh.c.muted, fontSize = 15.sp, modifier = Modifier.weight(1f))
@@ -189,6 +196,11 @@ internal fun NewTaskSheet(ui: ChatUiState, onDismiss: () -> Unit, onStart: (Devi
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Chip("不指定", cwd == null && custom.isBlank()) { cwd = null; custom = "" }
                 spaces.forEach { sp -> Chip(sp.name, cwd == sp.cwd, Icons.Filled.Folder) { cwd = sp.cwd; custom = "" } }
+            }
+            val shown = custom.ifBlank { cwd }
+            if (!shown.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(shown, fontSize = 12.sp, color = Dsh.c.muted, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.height(10.dp))
             OutlinedTextField(custom, { custom = it; if (it.isNotBlank()) cwd = null }, placeholder = { Text("或输入电脑上的路径，如 ~/code/app") }, singleLine = true,

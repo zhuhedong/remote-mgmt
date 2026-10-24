@@ -5,6 +5,8 @@
  * with the last `version` it saw. No public HTTP, no mux.
  */
 import { randomUUID } from "node:crypto";
+import { homedir as osHomedir } from "node:os";
+import path from "node:path";
 
 export interface ChatMessage {
   seq: number;
@@ -43,7 +45,30 @@ export function unwrap(v: any): any {
   return v;
 }
 
-function textOf(content: any): string {
+/**
+ * Expand `~` / resolve a session cwd before handing it to DSH.
+ * DSH `mkdir(cwd)` does NOT expand tilde; relative paths fall back to process.cwd().
+ * Exported for unit tests (inject home/cwd).
+ */
+export function resolveSessionCwd(
+  raw: string,
+  home: string = osHomedir(),
+  baseCwd: string = process.cwd(),
+): string {
+  const s = String(raw ?? "").trim();
+  if (!s) fail("VALIDATION", "cwd 不能为空");
+  let expanded: string;
+  if (s === "~") expanded = home;
+  else if (s.startsWith("~/") || s.startsWith("~\\")) expanded = path.join(home, s.slice(2));
+  else expanded = s;
+  if (!path.isAbsolute(expanded)) expanded = path.resolve(baseCwd, expanded);
+  // Normalize trailing separators away except root
+  const norm = path.normalize(expanded);
+  return norm.length > 1 && (norm.endsWith("/") || norm.endsWith("\\")) ? norm.replace(/[\\/]+$/, "") : norm;
+}
+
+/** Visible text only: string or `type===text|undefined` parts. Drops thinking/reasoning/tool blobs. */
+export function textOf(content: any): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
@@ -63,12 +88,17 @@ const MAX_MESSAGES = 80;
 /** Fold one durable Session wire event into the message list. Exported for tests. */
 export function applyEvent(msgs: ChatMessage[], ev: any): boolean {
   if (!ev || typeof ev.type !== "string") return false;
+  // DSH marks some external/system events ignorable — never surface them in the chat UI.
+  if (ev.ignorable === true) return false;
   const d = ev.data ?? ev;
   const seq = Number(ev.seq) || 0;
   const time = typeof ev.time === "number" ? ev.time : undefined;
   switch (ev.type) {
     case "user/message": {
+      // Mirror DSH list.js lastPromptAt filter: only human-authored prompts.
+      if (d?.source?.kind !== "user") return false;
       const t = textOf(d.content ?? d.message?.content);
+      if (!t.trim()) return false;
       msgs.push({ seq, role: "user", text: t, time });
       return true;
     }
@@ -77,6 +107,9 @@ export function applyEvent(msgs: ChatMessage[], ev: any): boolean {
       if (t.trim()) msgs.push({ seq, role: "assistant", text: t, time });
       return true;
     }
+    case "system/message":
+    case "developer/message":
+      return false;
     case "tool/call": {
       msgs.push({ seq, role: "step", text: String(d.name || "tool"), name: String(d.name || "tool"), status: "running", callId: d.callId, time });
       return true;
@@ -222,11 +255,28 @@ export class ChatBridge {
 
   async sessionCreate(params: Record<string, unknown>): Promise<unknown> {
     const req: any = {};
-    if (typeof params.cwd === "string" && params.cwd) req.cwd = params.cwd;
+    const workspaceId = typeof params.workspaceId === "string" ? params.workspaceId.trim() : "";
+    const hasCwd = typeof params.cwd === "string";
+    const cwdRaw = hasCwd ? params.cwd : "";
+    if (workspaceId && hasCwd && cwdRaw.trim()) fail("VALIDATION", "workspaceId 与 cwd 不能同时指定");
+    if (workspaceId) {
+      req.workspaceId = workspaceId;
+    } else if (hasCwd) {
+      // Explicit empty string is a client bug; omitting cwd is fine (DSH defaultCwd).
+      if (!cwdRaw.trim()) fail("VALIDATION", "cwd 不能为空");
+      req.cwd = resolveSessionCwd(cwdRaw);
+    }
+    // else: omit both → DSH uses defaultCwd
     const r = unwrap(await this.ctl().create(req));
     const sessionId = r?.sessionId ?? r?.session?.id ?? r?.id;
     if (!sessionId) fail("DSH_ERROR", "create 未返回 sessionId");
-    return { sessionId, agentPreset: r?.agentPreset ?? null };
+    let cwd: string | null = req.cwd ?? null;
+    try {
+      const list = unwrap(await this.ctl().list({}, this.sig(10_000)));
+      const item = (list?.items || []).find((it: any) => it.sessionId === sessionId);
+      if (item && typeof item.cwd === "string" && item.cwd) cwd = item.cwd;
+    } catch { /* keep resolved cwd */ }
+    return { sessionId, cwd, agentPreset: r?.agentPreset ?? null };
   }
 
   async sessionRename(params: Record<string, unknown>): Promise<unknown> {

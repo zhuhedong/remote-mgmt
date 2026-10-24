@@ -7,6 +7,7 @@ import cn.zhuhedong.remote.data.ChatParse
 import cn.zhuhedong.remote.data.ChatSession
 import cn.zhuhedong.remote.data.ChatSpace
 import cn.zhuhedong.remote.data.DeviceInstance
+import cn.zhuhedong.remote.data.ErrKind
 import cn.zhuhedong.remote.data.Friendly
 import cn.zhuhedong.remote.data.FriendlyError
 import cn.zhuhedong.remote.data.HubRepository
@@ -45,6 +46,8 @@ data class ChatUiState(
     val caps: Set<String> = emptySet(),
     val capsError: FriendlyError? = null,
     val toast: String? = null,
+    /** Absolute or ~/… path chosen for the next create; kept in UI state so it can't desync from [pendingSpace]. */
+    val pendingCwd: String? = null,
     val pendingSpace: String? = null,
 ) {
     val canRename: Boolean get() = "chat.session.rename" in caps
@@ -88,7 +91,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
 
     fun selectDevice(d: DeviceInstance) {
         stopFollow()
-        set { it.copy(device = d, l1 = null, caps = emptySet(), capsError = null, sessions = emptyList(), spaces = emptyList(), sessionId = null, messages = emptyList(), live = "", running = false, models = emptyList(), model = null) }
+        set { it.copy(device = d, l1 = null, caps = emptySet(), capsError = null, sessions = emptyList(), spaces = emptyList(), sessionId = null, messages = emptyList(), live = "", running = false, models = emptyList(), model = null, pendingCwd = null, pendingSpace = null) }
         viewModelScope.launch {
             val res = runCatching { withContext(Dispatchers.IO) { hub.capabilities(d.id) } }
             val caps = res.getOrNull()
@@ -121,21 +124,22 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
 
     fun openSession(id: String) {
         stopFollow()
-        set { it.copy(sessionId = id, messages = emptyList(), live = "", running = false, error = null) }
+        set { it.copy(sessionId = id, messages = emptyList(), live = "", running = false, error = null, pendingCwd = null, pendingSpace = null) }
         startFollow(id)
         loadModels()
     }
 
-    /** "新建任务": clear to a blank composer; the session is created on first send. */
+    /** Blank composer with no project; session is created on first send. */
     fun newTask() {
         stopFollow()
-        pendingCwd = null
-        set { it.copy(pendingSpace = null, sessionId = null, messages = emptyList(), live = "", running = false, error = null) }
+        set { it.copy(pendingCwd = null, pendingSpace = null, sessionId = null, messages = emptyList(), live = "", running = false, error = null) }
     }
 
-    private var pendingCwd: String? = null
-
-    fun newInSpace(cwd: String) { newTask(); pendingCwd = cwd; set { it.copy(pendingSpace = cwd) } }
+    fun newInSpace(cwd: String) {
+        stopFollow()
+        val c = cwd.trim().ifBlank { null }
+        set { it.copy(pendingCwd = c, pendingSpace = c, sessionId = null, messages = emptyList(), live = "", running = false, error = null) }
+    }
 
     fun updateInput(s: String) = set { it.copy(input = s) }
 
@@ -146,15 +150,32 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
             set { it.copy(sending = true, error = null) }
             var sid = _ui.value.sessionId
             if (sid == null) {
-                val p = JSONObject(); pendingCwd?.let { p.put("cwd", it) }
+                val want = _ui.value.pendingCwd
+                val p = JSONObject(); want?.let { p.put("cwd", it) }
                 val r = call("chat.session.create", p)
                 sid = r.data?.get("sessionId") as? String
                 if (!r.ok || sid == null) { set { it.copy(sending = false, error = errText(r)) }; return@launch }
-                pendingCwd = null
-                set { it.copy(sessionId = sid, pendingSpace = null) }
+                val got = r.data?.get("cwd") as? String
+                if (!cwdMatches(want, got)) {
+                    set {
+                        it.copy(
+                            sending = false,
+                            sessionId = null,
+                            error = FriendlyError(
+                                ErrKind.GENERIC,
+                                "工作目录不对",
+                                "新建的会话在 ${got ?: "（未知）"}，不是你选的 $want。请重新选项目后再发。",
+                                "知道了",
+                                "cwd want=$want got=$got",
+                            ),
+                        )
+                    }
+                    return@launch
+                }
+                set { it.copy(sessionId = sid, pendingCwd = null, pendingSpace = got ?: want) }
                 startFollow(sid)
-                // carry the composer's chosen model into the new session
                 _ui.value.model?.let { m -> call("models.select", JSONObject().put("sessionId", sid).put("provider", m.provider).put("model", m.model)) }
+                refreshSessions()
             }
             val optimistic = ChatMsg(Long.MAX_VALUE, "user", text)
             set { it.copy(input = "", messages = it.messages + optimistic, running = true) }
@@ -204,8 +225,9 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
     /** New-task sheet: optionally switch device, then start a blank task in [cwd]. */
     fun startTask(device: DeviceInstance?, cwd: String?) {
         if (device != null && device.id != _ui.value.device?.id) selectDevice(device)
-        newTask(); pendingCwd = cwd?.trim()?.ifBlank { null }
-        set { it.copy(pendingSpace = pendingCwd) }
+        val c = cwd?.trim()?.ifBlank { null }
+        stopFollow()
+        set { it.copy(pendingCwd = c, pendingSpace = c, sessionId = null, messages = emptyList(), live = "", running = false, error = null) }
     }
 
     fun renameSession(id: String, title: String) {
@@ -254,4 +276,22 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
     private fun stopFollow() { followJob?.cancel(); followJob = null }
 
     override fun onCleared() { stopFollow() }
+
+    companion object {
+        /** True when create landed in the project the user picked (handles ~/… vs absolute). */
+        fun cwdMatches(pending: String?, actual: String?): Boolean {
+            if (pending.isNullOrBlank()) return true
+            if (actual.isNullOrBlank()) return true // old agent: can't verify
+            val a = actual.trim().trimEnd('/', '\\')
+            val p = pending.trim().trimEnd('/', '\\')
+            if (a == p) return true
+            if (p == "~") return true
+            if (p.startsWith("~/") || p.startsWith("~\\")) {
+                val rest = p.drop(2).replace('\\', '/')
+                val ar = a.replace('\\', '/')
+                return ar.endsWith("/$rest") || ar.endsWith(rest)
+            }
+            return false
+        }
+    }
 }

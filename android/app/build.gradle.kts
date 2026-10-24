@@ -12,8 +12,8 @@ android {
         applicationId = "cn.zhuhedong.remote"
         minSdk = 28
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0-a1"
+        versionCode = 4
+        versionName = "0.3.1-a1"
         buildConfigField("String", "DEFAULT_HUB", "\"https://remote.zhuhedong.cn\"")
     }
 

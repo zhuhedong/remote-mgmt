@@ -47,3 +47,13 @@ class ChatLogicTest {
         assertEquals("x", sp[0].name)
     }
 }
+
+    @Test fun cwdMatchesPendingProject() {
+        assertTrue(cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches(null, "/a"))
+        assertTrue(cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches("/Users/code/app", "/Users/code/app"))
+        assertTrue(cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches("/Users/code/app/", "/Users/code/app"))
+        assertTrue(cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches("~/code/app", "/Users/code/code/app"))
+        assertTrue(cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches("~/code/app", "/Users/me/code/app"))
+        assertTrue(!cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches("/Users/code/a", "/Users/code/b"))
+        assertTrue(cn.zhuhedong.remote.viewmodel.ChatViewModel.cwdMatches("~/x", null)) // old agent
+    }

@@ -5447,6 +5447,8 @@ function findCapability(id, includeL1 = false) {
 
 // src/bridge/chat.ts
 import { randomUUID } from "node:crypto";
+import { homedir as osHomedir } from "node:os";
+import path from "node:path";
 function fail(code, message) {
   const e = new Error(message);
   e.code = code;
@@ -5459,6 +5461,17 @@ function unwrap(v) {
     fail(String(err.code || "DSH_ERROR"), String(err.message || "dsh error"));
   }
   return v;
+}
+function resolveSessionCwd(raw, home = osHomedir(), baseCwd = process.cwd()) {
+  const s = String(raw ?? "").trim();
+  if (!s) fail("VALIDATION", "cwd \u4E0D\u80FD\u4E3A\u7A7A");
+  let expanded;
+  if (s === "~") expanded = home;
+  else if (s.startsWith("~/") || s.startsWith("~\\")) expanded = path.join(home, s.slice(2));
+  else expanded = s;
+  if (!path.isAbsolute(expanded)) expanded = path.resolve(baseCwd, expanded);
+  const norm = path.normalize(expanded);
+  return norm.length > 1 && (norm.endsWith("/") || norm.endsWith("\\")) ? norm.replace(/[\\/]+$/, "") : norm;
 }
 function textOf(content) {
   if (typeof content === "string") return content;
@@ -5473,12 +5486,15 @@ function basename(p) {
 var MAX_MESSAGES = 80;
 function applyEvent(msgs, ev) {
   if (!ev || typeof ev.type !== "string") return false;
+  if (ev.ignorable === true) return false;
   const d = ev.data ?? ev;
   const seq = Number(ev.seq) || 0;
   const time = typeof ev.time === "number" ? ev.time : void 0;
   switch (ev.type) {
     case "user/message": {
+      if (d?.source?.kind !== "user") return false;
       const t = textOf(d.content ?? d.message?.content);
+      if (!t.trim()) return false;
       msgs.push({ seq, role: "user", text: t, time });
       return true;
     }
@@ -5487,6 +5503,9 @@ function applyEvent(msgs, ev) {
       if (t.trim()) msgs.push({ seq, role: "assistant", text: t, time });
       return true;
     }
+    case "system/message":
+    case "developer/message":
+      return false;
     case "tool/call": {
       msgs.push({ seq, role: "step", text: String(d.name || "tool"), name: String(d.name || "tool"), status: "running", callId: d.callId, time });
       return true;
@@ -5644,11 +5663,27 @@ var ChatBridge = class {
   }
   async sessionCreate(params) {
     const req = {};
-    if (typeof params.cwd === "string" && params.cwd) req.cwd = params.cwd;
+    const workspaceId = typeof params.workspaceId === "string" ? params.workspaceId.trim() : "";
+    const hasCwd = typeof params.cwd === "string";
+    const cwdRaw = hasCwd ? params.cwd : "";
+    if (workspaceId && hasCwd && cwdRaw.trim()) fail("VALIDATION", "workspaceId \u4E0E cwd \u4E0D\u80FD\u540C\u65F6\u6307\u5B9A");
+    if (workspaceId) {
+      req.workspaceId = workspaceId;
+    } else if (hasCwd) {
+      if (!cwdRaw.trim()) fail("VALIDATION", "cwd \u4E0D\u80FD\u4E3A\u7A7A");
+      req.cwd = resolveSessionCwd(cwdRaw);
+    }
     const r = unwrap(await this.ctl().create(req));
     const sessionId = r?.sessionId ?? r?.session?.id ?? r?.id;
     if (!sessionId) fail("DSH_ERROR", "create \u672A\u8FD4\u56DE sessionId");
-    return { sessionId, agentPreset: r?.agentPreset ?? null };
+    let cwd = req.cwd ?? null;
+    try {
+      const list = unwrap(await this.ctl().list({}, this.sig(1e4)));
+      const item = (list?.items || []).find((it) => it.sessionId === sessionId);
+      if (item && typeof item.cwd === "string" && item.cwd) cwd = item.cwd;
+    } catch {
+    }
+    return { sessionId, cwd, agentPreset: r?.agentPreset ?? null };
   }
   async sessionRename(params) {
     const sessionId = reqSession(params);
@@ -6606,8 +6641,8 @@ async function handle(prefix, connection, handler, req, res) {
     res.end(rej === 401 ? "unauthorized" : "forbidden");
     return;
   }
-  const path = new URL(req.url || "/", "http://dsh.internal").pathname;
-  const ep = path.startsWith(prefix + "/") ? path.slice(prefix.length + 1) : "";
+  const path2 = new URL(req.url || "/", "http://dsh.internal").pathname;
+  const ep = path2.startsWith(prefix + "/") ? path2.slice(prefix.length + 1) : "";
   if (!ep || ep.split("/").some((s) => !SEG.test(s) || s === "." || s === "..")) return text(res, 404, "not found");
   if (req.method !== "POST") return text(res, 405, "method not allowed");
   const ct = String([].concat(req.headers["content-type"] || "")[0]).split(";")[0].trim().toLowerCase();
