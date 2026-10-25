@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BridgeRouter, ChatBridge, applyEvent, parseAskArguments, unwrap, resolveSessionCwd, textOf, chunkText } from "../.build/bridge/index.js";
+import { BridgeRouter, ChatBridge, applyEvent, parseAskArguments, isPendingAskResult, extractAskCallId, extractAskSessionId, unwrap, resolveSessionCwd, textOf, chunkText } from "../.build/bridge/index.js";
 
 function fakeController() {
   const calls = [];
@@ -174,4 +174,43 @@ test("parseAskArguments and applyEvent ask step", () => {
   assert.equal(msgs[0].ask.questions[0].id, "q1");
   applyEvent(msgs, { type: "tool/result", seq: 2, data: { callId: "c1" } });
   assert.equal(msgs[0].status, "done");
+});
+
+
+test("extractAskCallId / sessionId and pending result", () => {
+  assert.equal(extractAskCallId({ wait: { callId: "c1", timed: true } }), "c1");
+  assert.equal(extractAskCallId({ questions: [{ id: "q" }] }), "");
+  assert.equal(extractAskSessionId({ agent: { id: "sess-1" } }), "sess-1");
+  assert.equal(isPendingAskResult({ result: { pending: true, callId: "c1" } }), true);
+  assert.equal(isPendingAskResult({ message: { callId: "c1" } }), false);
+  const msgs = [];
+  applyEvent(msgs, { type: "tool/call", seq: 1, data: { callId: "c1", name: "ask_user_question", arguments: { questions: [{ id: "q1", question: "选？", options: [{ label: "A" }] }] } } });
+  applyEvent(msgs, { type: "tool/result", seq: 2, data: { callId: "c1", result: { pending: true, callId: "c1" } } });
+  assert.equal(msgs[0].status, "running"); // stay interactive
+});
+
+test("provisional park rebinds to tool callId and answerAsk resolves", async () => {
+  const ctl = fakeController();
+  const chat = new ChatBridge(() => ctl);
+  // Start follower so surfaceAsk has somewhere to land
+  const followP = chat.follow({ sessionId: "s1", version: -1, waitMs: 0 });
+  await new Promise((r) => setTimeout(r, 30));
+  const race = chat.raceUserQuestion(
+    { questions: [{ id: "q1", question: "选哪个？", options: [{ label: "A" }, { label: "B" }] }], agent: { id: "s1" } },
+    () => new Promise(() => {}), // desktop never answers
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  // Simulate tool/call with real callId
+  ctl.emit({ type: "event", event: { type: "tool/call", seq: 9, data: { callId: "tool-real", name: "ask_user_question", arguments: { questions: [{ id: "q1", question: "选哪个？", options: [{ label: "A" }, { label: "B" }] }] } } } });
+  await new Promise((r) => setTimeout(r, 40));
+  const snap = await chat.follow({ sessionId: "s1", version: -1, waitMs: 0 });
+  assert.ok(snap.pendingAsk, "pendingAsk should stay while park live");
+  assert.equal(snap.pendingAsk.callId, "tool-real");
+  const ans = chat.answerAsk({ sessionId: "s1", callId: "tool-real", answers: [{ id: "q1", selected: ["A"] }] });
+  const result = await ans;
+  assert.equal(result.ok, true);
+  const answered = await race;
+  assert.deepEqual(answered.answers[0].selected, ["A"]);
+  chat.dispose();
+  await followP.catch(() => {});
 });

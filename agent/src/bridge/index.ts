@@ -1,5 +1,5 @@
 export { L0_CATALOG, listCapabilities, findCapability } from "./catalog.js";
-export { ChatBridge, applyEvent, parseAskArguments, chunkText, textOf, resolveSessionCwd, unwrap, type ChatMessage, type FollowState, type AskPayload, type AskQuestion, type AskOption, type AskAnswerItem } from "./chat.js";
+export { ChatBridge, applyEvent, parseAskArguments, isPendingAskResult, extractAskCallId, extractAskSessionId, chunkText, textOf, resolveSessionCwd, unwrap, type ChatMessage, type FollowState, type AskPayload, type AskQuestion, type AskOption, type AskAnswerItem } from "./chat.js";
 export { L1_CATALOG } from "./catalog.js";
 export { BridgeRouter, handleControlMessage } from "./router.js";
 export { LogRing, clampLogLines, type LogEntry } from "./logs.js";

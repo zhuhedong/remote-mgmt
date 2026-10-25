@@ -382,11 +382,20 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
                         version = f.version
                         val wasRunning = _ui.value.running
                         set {
+                            // Keep local card if agent briefly omits pendingAsk while a running
+                            // ask step (or in-flight submit) still exists — avoids "已关闭" while
+                            // desktop DSH is still waiting.
+                            val mergedAsk = f.pendingAsk
+                                ?: it.pendingAsk?.takeIf { cur ->
+                                    it.answeringAsk || f.messages.any { m ->
+                                        m.ask?.callId == cur.callId && m.status == "running"
+                                    }
+                                }
                             it.copy(
                                 messages = f.messages,
                                 live = f.live,
                                 running = f.running || it.sending,
-                                pendingAsk = f.pendingAsk,
+                                pendingAsk = mergedAsk,
                                 error = f.error?.let { m -> Friendly.of("DSH_ERROR", m) } ?: it.error,
                             )
                         }

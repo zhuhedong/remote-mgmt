@@ -115,4 +115,20 @@ class ChatLogicTest {
         val fromPending = groupChat(emptyList(), "", parsed.pendingAsk)
         assertTrue(fromPending[0] is ChatItem.Ask)
     }
+
+    @Test fun pendingAskKeepsDoneStepInteractive() {
+        val ask = cn.zhuhedong.remote.data.AskPayload(
+            "c1",
+            listOf(cn.zhuhedong.remote.data.AskQuestion("q1", "选一个", options = listOf(cn.zhuhedong.remote.data.AskOption("A")))),
+        )
+        val items = groupChat(
+            listOf(ChatMsg(1, "step", "选一个", "done", name = "ask_user_question", callId = "c1", ask = ask)),
+            "",
+            ask,
+        )
+        assertEquals(1, items.size)
+        assertTrue(items[0] is ChatItem.Ask)
+        assertEquals(false, (items[0] as ChatItem.Ask).answered)
+    }
+
 }

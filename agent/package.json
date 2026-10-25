@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-agent",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Connect this DSH to your self-hosted DSH Remote hub (outbound WSS, SSO, device enrollment).",
   "type": "module",
   "main": "index.js",

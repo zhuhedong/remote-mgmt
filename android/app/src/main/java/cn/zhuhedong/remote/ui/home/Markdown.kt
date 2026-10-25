@@ -84,7 +84,11 @@ fun groupChat(msgs: List<ChatMsg>, live: String, pendingAsk: AskPayload? = null)
                 if (ask != null) {
                     flush()
                     seenAsk.add(ask.callId)
-                    out.add(ChatItem.Ask(ask, answered = m.status != "running"))
+                    // Prefer live pendingAsk: agent park may still be waiting even if a
+                    // tool/result briefly marked the step done (e.g. timed pending).
+                    val live = pendingAsk?.takeIf { it.callId == ask.callId }
+                    val interactive = live != null || m.status == "running"
+                    out.add(ChatItem.Ask(live ?: ask, answered = !interactive))
                 } else {
                     buf.add(m)
                 }
