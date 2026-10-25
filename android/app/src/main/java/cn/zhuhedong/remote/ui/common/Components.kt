@@ -1,11 +1,14 @@
 package cn.zhuhedong.remote.ui.common
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,8 +16,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,6 +36,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -163,4 +169,45 @@ fun SettingRow(icon: ImageVector, title: String, value: String? = null, danger: 
         }
     }
     if (onClick != null) Surface(onClick = onClick, color = Color.Transparent) { content() } else content()
+}
+
+/**
+ * Bottom sheet drawn inside the current composition (no Dialog window).
+ * Material3 ModalBottomSheet hosts a Dialog; removing it from composition without
+ * hide() leaves an invisible scrim that blocks touches on every destination —
+ * including system/UI back on the device detail page.
+ */
+@Composable
+fun InLayoutBottomSheet(
+    onDismiss: () -> Unit,
+    dismissOnScrim: Boolean = true,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    BackHandler(onBack = onDismiss)
+    Box(Modifier.fillMaxSize()) {
+        val scrimMod = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.45f))
+        if (dismissOnScrim) {
+            Box(
+                scrimMod.clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() },
+                    onClick = onDismiss,
+                ),
+            )
+        } else {
+            Box(scrimMod)
+        }
+        Surface(
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            color = Dsh.c.card,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .navigationBarsPadding(),
+        ) {
+            Column(content = content)
+        }
+    }
 }

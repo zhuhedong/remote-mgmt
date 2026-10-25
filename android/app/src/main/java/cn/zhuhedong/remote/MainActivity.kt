@@ -123,7 +123,18 @@ private fun AppNav(app: DshRemoteApp) {
                 factory = VmFactory(app.hub, id),
                 key = id,
             )
-            WorkbenchScreen(title = name, vm = vm, onBack = { vm.clearOverlays(); vm.stopPolling(); nav.popBackStack() })
+            WorkbenchScreen(
+                title = name,
+                vm = vm,
+                onBack = {
+                    vm.clearOverlays()
+                    vm.stopPolling()
+                    // Prefer popping to home so a leaked overlay can't leave an empty back stack.
+                    if (!nav.popBackStack("home", inclusive = false)) {
+                        nav.popBackStack()
+                    }
+                },
+            )
         }
     }
 }

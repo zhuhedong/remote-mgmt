@@ -30,11 +30,8 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SystemUpdate
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -46,7 +43,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,11 +59,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cn.zhuhedong.remote.data.Friendly
-import kotlinx.coroutines.launch
 import cn.zhuhedong.remote.data.InvokeResult
 import cn.zhuhedong.remote.ui.common.DshCard
 import cn.zhuhedong.remote.ui.common.ErrorState
 import cn.zhuhedong.remote.ui.common.GhostButton
+import cn.zhuhedong.remote.ui.common.InLayoutBottomSheet
 import cn.zhuhedong.remote.ui.common.Pill
 import cn.zhuhedong.remote.ui.common.PrimaryButton
 import cn.zhuhedong.remote.ui.common.SectionHeader
@@ -78,16 +74,12 @@ import cn.zhuhedong.remote.ui.theme.Dsh
 import cn.zhuhedong.remote.viewmodel.WorkbenchViewModel
 
 /** 「我的 → 设备详情」: A0 monitoring redesigned as cards, gauges and sparklines. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WorkbenchScreen(title: String, vm: WorkbenchViewModel, onBack: () -> Unit, autoLoad: Boolean = true) {
     val ui by vm.ui.collectAsState()
-    val scope = rememberCoroutineScope()
-    val confirmSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val reauthSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     LaunchedEffect(Unit) { if (autoLoad) { vm.load(); vm.pollMetrics() } }
-    // Leaving this destination must drop Dialog-hosted sheets + stop poll, or Home gets an invisible touch-blocking scrim.
+    // Always tear down overlays + poll when this destination leaves composition.
     DisposableEffect(vm) {
         onDispose {
             vm.clearOverlays()
@@ -96,23 +88,16 @@ fun WorkbenchScreen(title: String, vm: WorkbenchViewModel, onBack: () -> Unit, a
     }
 
     fun leave() {
+        // Clear in-layout sheets first so nothing can eat the back navigation.
         vm.clearOverlays()
         vm.stopPolling()
         onBack()
     }
 
-    BackHandler {
-        when {
-            ui.confirmSensitive != null -> scope.launch {
-                runCatching { confirmSheet.hide() }
-                vm.dismissConfirm()
-            }
-            ui.showReauth && !ui.reauthBusy -> scope.launch {
-                runCatching { reauthSheet.hide() }
-                vm.dismissReauth()
-            }
-            else -> leave()
-        }
+    // System / gesture back: dismiss sheet if open, otherwise leave the page.
+    // In-layout sheets also register their own BackHandler when visible.
+    BackHandler(enabled = ui.confirmSensitive == null && !ui.showReauth) {
+        leave()
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -141,17 +126,8 @@ fun WorkbenchScreen(title: String, vm: WorkbenchViewModel, onBack: () -> Unit, a
         }
 
         ui.confirmSensitive?.let { p ->
-            ModalBottomSheet(
-                onDismissRequest = {
-                    scope.launch {
-                        runCatching { confirmSheet.hide() }
-                        vm.dismissConfirm()
-                    }
-                },
-                sheetState = confirmSheet,
-                containerColor = Dsh.c.card,
-            ) {
-                Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp)) {
+            InLayoutBottomSheet(onDismiss = vm::dismissConfirm) {
+                Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp, top = 8.dp)) {
                     Text(p.title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Dsh.c.ink)
                     Spacer(Modifier.height(8.dp))
                     Text(
@@ -166,35 +142,19 @@ fun WorkbenchScreen(title: String, vm: WorkbenchViewModel, onBack: () -> Unit, a
                     }
                     Spacer(Modifier.height(20.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        GhostButton("取消", {
-                            scope.launch {
-                                runCatching { confirmSheet.hide() }
-                                vm.dismissConfirm()
-                            }
-                        }, Modifier.weight(1f))
-                        PrimaryButton(if (p.execute) "确认执行" else "开始演练", {
-                            scope.launch {
-                                runCatching { confirmSheet.hide() }
-                                vm.confirmSensitive()
-                            }
-                        }, Modifier.weight(1f), color = if (p.execute) Dsh.c.danger else Dsh.c.ink)
+                        GhostButton("取消", vm::dismissConfirm, Modifier.weight(1f))
+                        PrimaryButton(if (p.execute) "确认执行" else "开始演练", vm::confirmSensitive, Modifier.weight(1f), color = if (p.execute) Dsh.c.danger else Dsh.c.ink)
                     }
                 }
             }
         }
 
         if (ui.showReauth) {
-            ModalBottomSheet(
-                onDismissRequest = {
-                    if (!ui.reauthBusy) scope.launch {
-                        runCatching { reauthSheet.hide() }
-                        vm.dismissReauth()
-                    }
-                },
-                sheetState = reauthSheet,
-                containerColor = Dsh.c.card,
+            InLayoutBottomSheet(
+                onDismiss = { if (!ui.reauthBusy) vm.dismissReauth() },
+                dismissOnScrim = !ui.reauthBusy,
             ) {
-                Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp)) {
+                Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp, top = 8.dp)) {
                     Text("验证身份", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Dsh.c.ink)
                     Spacer(Modifier.height(6.dp))
                     Text("输入验证器 App 里的 6 位验证码（或密码），通过后自动继续刚才的操作。", color = Dsh.c.muted, fontSize = 14.sp)

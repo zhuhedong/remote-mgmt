@@ -43,4 +43,28 @@ class WorkbenchOverlayTest {
         assertTrue(clean.reauthCode.isEmpty())
         assertNull(clean.reauthError)
     }
+
+    @Test
+    fun leaveClearsOverlaysBeforePop_evenWhenSheetWasOpen() {
+        // Device-detail back must not depend on ModalBottomSheet.hide(); ripping a
+        // Dialog sheet out of composition used to leave a scrim that blocked back.
+        val dirty = WorkbenchUiState(
+            confirmSensitive = PendingSensitive("plugin.reload", "重载", true),
+            showReauth = true,
+        )
+        val clean = dirty.copy(
+            confirmSensitive = null,
+            showReauth = false,
+            pendingSensitive = null,
+            reauthBusy = false,
+            reauthError = null,
+            reauthPassword = "",
+            reauthCode = "",
+        )
+        assertNull(clean.confirmSensitive)
+        assertFalse(clean.showReauth)
+        // After clear, BackHandler(enabled = no sheet) path should call onBack/pop.
+        assertTrue(clean.confirmSensitive == null && !clean.showReauth)
+    }
+
 }

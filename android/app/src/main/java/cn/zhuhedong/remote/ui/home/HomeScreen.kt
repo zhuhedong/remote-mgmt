@@ -146,6 +146,17 @@ fun HomeScreen(
         }
     }
 
+    // Drop Dialog-hosted overlays before navigating away from Home, otherwise a
+    // leaked ModalBottomSheet/drawer scrim can sit above the device detail page
+    // and swallow system back + the top-bar back button.
+    fun openWorkbench(d: DeviceInstance) {
+        scope.launch {
+            if (drawer.isOpen) runCatching { drawer.close() }
+            newSheet = false
+            onOpenWorkbench(d)
+        }
+    }
+
     Scaffold(
         containerColor = Bg,
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -167,7 +178,7 @@ fun HomeScreen(
                 0 -> TasksTab(vm, ui, drawer, newSheet, onNewSheet = { newSheet = it })
                 1 -> ScheduleTab(ui, onGoChat = { selectTab(0) })
                 2 -> DiscoverTab(ui, onUsePrompt = { if (ui.sessionId != null) vm.newTask(); vm.updateInput(it); selectTab(0) }, onRetry = vm::retry)
-                else -> ProfileTab(ui, username, hubBase, onOpenWorkbench, onLogout, onRefresh = vm::refreshDevices)
+                else -> ProfileTab(ui, username, hubBase, { openWorkbench(it) }, onLogout, onRefresh = vm::refreshDevices)
             }
         }
     }
