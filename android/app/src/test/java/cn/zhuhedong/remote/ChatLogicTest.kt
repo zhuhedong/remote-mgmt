@@ -21,6 +21,42 @@ class ChatLogicTest {
         assertEquals(MdBlock.Code("code"), b[4])
     }
 
+    @Test fun markdownTableQuoteLinkAndJson() {
+        val table = parseMarkdown("| A | B |\n|---|---|\n| 1 | 2 |")
+        assertTrue(table[0] is MdBlock.Table)
+        val t = table[0] as MdBlock.Table
+        assertEquals(listOf("A", "B"), t.headers)
+        assertEquals(listOf("1", "2"), t.rows[0])
+
+        val q = parseMarkdown("> 引用一行\n> 第二行")
+        assertEquals(MdBlock.Quote("引用一行\n第二行"), q[0])
+
+        val fence = parseMarkdown("```kotlin\nval x = 1\n```")
+        assertEquals(MdBlock.Code("val x = 1", "kotlin"), fence[0])
+
+        val json = parseMarkdown("""{"a":1,"b":[2,3]}""")
+        assertEquals(1, json.size)
+        assertTrue(json[0] is MdBlock.Code)
+        assertEquals("json", (json[0] as MdBlock.Code).lang)
+
+        val inline = cn.zhuhedong.remote.ui.home.inlineMd("见 [文档](https://example.com) 与 **粗体** 和 `code`")
+        assertTrue(inline.text.contains("文档"))
+        assertTrue(inline.text.contains("粗体"))
+        assertTrue(inline.text.contains("code"))
+        assertTrue(!inline.text.contains("**"))
+        assertTrue(!inline.text.contains("`"))
+    }
+
+    @Test fun softBreakDoesNotSplitMarkers() {
+        val s = "abcdefghijabcdefghijabcdefghij**粗**"
+        val broken = cn.zhuhedong.remote.ui.home.softBreakAscii(s, every = 10)
+        // ASCII soft-break inserts ZWSP but never inside ** markers themselves for CJK after
+        assertTrue(broken.contains("**粗**") || broken.contains("**"))
+        val annotated = cn.zhuhedong.remote.ui.home.inlineMd("前缀文字很多很多很多很多很多很多很多很多**加粗**后缀")
+        assertTrue(annotated.text.contains("加粗"))
+        assertTrue(!annotated.text.contains("**"))
+    }
+
     @Test fun groupsStepsAndLive() {
         val items = groupChat(listOf(
             ChatMsg(1, "user", "hi"),

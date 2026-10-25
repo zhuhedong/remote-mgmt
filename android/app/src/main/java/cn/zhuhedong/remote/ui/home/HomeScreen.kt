@@ -5,10 +5,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,6 +23,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -85,6 +88,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -109,21 +113,8 @@ private val Online: Color @Composable get() = Dsh.c.online
 private val UserBubble: Color @Composable get() = Dsh.c.userBubble
 
 
-/** Insert zero-width spaces so long JSON/tokens wrap on narrow phones instead of clipping. */
-private fun softBreak(text: String, every: Int = 32): String {
-    if (text.length < every) return text
-    val out = StringBuilder(text.length + text.length / every)
-    var run = 0
-    for (ch in text) {
-        out.append(ch)
-        if (ch.isWhitespace()) run = 0
-        else {
-            run++
-            if (run >= every) { out.append('\u200B'); run = 0 }
-        }
-    }
-    return out.toString()
-}
+/** Soft-wrap long ASCII tokens in plain (non-markdown) bubbles. */
+private fun softBreak(text: String): String = softBreakAscii(text, every = 36)
 
 
 /** Main shell modelled on WorkBuddy: chat-first 任务 tab with a left drawer + bottom tabs. */
@@ -562,30 +553,147 @@ private fun StepsCard(steps: List<ChatMsg>, active: Boolean) {
 
 @Composable
 fun MarkdownText(text: String) {
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    val codeBg = Dsh.c.code
+    val link = Dsh.c.accent
+    val border = CardBorder
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         parseMarkdown(text).forEach { b ->
             when (b) {
-                is MdBlock.Heading -> Text(inlineMd(softBreak(b.text, 24), Dsh.c.code), fontSize = (22 - b.level * 2).coerceAtLeast(15).sp, fontWeight = FontWeight.SemiBold, color = Ink, modifier = Modifier.fillMaxWidth())
-                is MdBlock.Bullet -> Row(Modifier.fillMaxWidth()) {
-                    Text(b.marker + " ", color = Ink, fontSize = 16.sp)
-                    Text(inlineMd(softBreak(b.text, 28), Dsh.c.code), color = Ink, fontSize = 16.sp, lineHeight = 24.sp, modifier = Modifier.weight(1f))
-                }
-                is MdBlock.Code -> Surface(shape = RoundedCornerShape(10.dp), color = Dsh.c.code, modifier = Modifier.fillMaxWidth()) {
-                    val vScroll = rememberScrollState()
+                is MdBlock.Heading -> Text(
+                    inlineMd(b.text, codeBg, link),
+                    fontSize = (22 - b.level * 2).coerceAtLeast(15).sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Ink,
+                    lineHeight = (28 - b.level).coerceAtLeast(20).sp,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                is MdBlock.Bullet -> Row(
+                    Modifier.fillMaxWidth().padding(start = (b.indent * 14).dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
                     Text(
-                        softBreak(b.code, 28),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
+                        b.marker,
                         color = Ink,
-                        softWrap = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 260.dp)
-                            .verticalScroll(vScroll)
-                            .padding(12.dp),
+                        fontSize = 16.sp,
+                        lineHeight = 24.sp,
+                        modifier = Modifier.widthIn(min = 22.dp),
+                    )
+                    Text(
+                        inlineMd(b.text, codeBg, link),
+                        color = Ink,
+                        fontSize = 16.sp,
+                        lineHeight = 24.sp,
+                        modifier = Modifier.weight(1f),
                     )
                 }
-                is MdBlock.Para -> Text(inlineMd(softBreak(b.text, 28), Dsh.c.code), color = Ink, fontSize = 16.sp, lineHeight = 25.sp, modifier = Modifier.fillMaxWidth())
+                is MdBlock.Quote -> Row(
+                    Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Box(
+                        Modifier
+                            .padding(end = 10.dp)
+                            .width(3.dp)
+                            .fillMaxHeight()
+                            .background(Dsh.c.accent.copy(alpha = 0.45f), RoundedCornerShape(2.dp)),
+                    )
+                    Text(
+                        inlineMd(b.text, codeBg, link),
+                        color = Muted,
+                        fontSize = 15.sp,
+                        lineHeight = 23.sp,
+                        fontStyle = FontStyle.Italic,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                is MdBlock.Code -> {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = codeBg,
+                        modifier = Modifier.fillMaxWidth().border(1.dp, border, RoundedCornerShape(10.dp)),
+                    ) {
+                        Column {
+                            if (!b.lang.isNullOrBlank()) {
+                                Text(
+                                    b.lang!!,
+                                    color = Muted,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(start = 12.dp, top = 8.dp, end = 12.dp),
+                                )
+                            }
+                            val hScroll = rememberScrollState()
+                            val vScroll = rememberScrollState()
+                            Text(
+                                b.code.ifEmpty { " " },
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                color = Ink,
+                                softWrap = false,
+                                modifier = Modifier
+                                    .heightIn(max = 280.dp)
+                                    .horizontalScroll(hScroll)
+                                    .verticalScroll(vScroll)
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                            )
+                        }
+                    }
+                }
+                is MdBlock.Table -> MdTable(b.headers, b.rows)
+                is MdBlock.Hr -> HorizontalDivider(
+                    color = border,
+                    thickness = 1.dp,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                )
+                is MdBlock.Para -> Text(
+                    inlineMd(b.text, codeBg, link),
+                    color = Ink,
+                    fontSize = 16.sp,
+                    lineHeight = 25.sp,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MdTable(headers: List<String>, rows: List<List<String>>) {
+    val border = CardBorder
+    val hScroll = rememberScrollState()
+    val cols = maxOf(headers.size, rows.maxOfOrNull { it.size } ?: 0).coerceAtLeast(1)
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = Dsh.c.card,
+        modifier = Modifier.fillMaxWidth().border(1.dp, border, RoundedCornerShape(10.dp)),
+    ) {
+        Column(Modifier.horizontalScroll(hScroll).padding(1.dp)) {
+            fun cell(i: Int, list: List<String>) = list.getOrElse(i) { "" }
+            Row(Modifier.background(Dsh.c.selected).padding(horizontal = 4.dp, vertical = 2.dp)) {
+                for (i in 0 until cols) {
+                    Text(
+                        inlineMd(cell(i, headers), Dsh.c.code, Dsh.c.accent),
+                        color = Ink,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.widthIn(min = 72.dp, max = 180.dp).padding(6.dp),
+                    )
+                }
+            }
+            rows.forEachIndexed { idx, row ->
+                Row(
+                    Modifier
+                        .background(if (idx % 2 == 0) Dsh.c.card else Dsh.c.bg)
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                ) {
+                    for (i in 0 until cols) {
+                        Text(
+                            inlineMd(cell(i, row), Dsh.c.code, Dsh.c.accent),
+                            color = Ink,
+                            fontSize = 13.sp,
+                            modifier = Modifier.widthIn(min = 72.dp, max = 180.dp).padding(6.dp),
+                        )
+                    }
+                }
             }
         }
     }
