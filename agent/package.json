@@ -43,7 +43,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node build.mjs && node --test test/unit/",
     "e2e": "node build.mjs && node test/e2e.mjs",
-    "pack": "node build.mjs && npm pack --pack-destination dist"
+    "pack": "node build.mjs && mkdir -p dist && npm pack --pack-destination dist"
   },
   "peerDependencies": {
     "@deepseek-ai/schemastery": "^3.18.2"
