@@ -216,6 +216,39 @@ class WorkbenchViewModel(private val hub: HubRepository, private val instanceId:
         }
     }
 
+    fun stopPolling() {
+        pollJob?.cancel()
+        pollJob = null
+    }
+
+    /**
+     * Drop confirm/reauth sheet flags immediately.
+     * Material3 ModalBottomSheet is hosted in a Dialog window; if the destination is
+     * popped while a sheet (or its dismiss animation) is still up, the invisible scrim
+     * can remain and swallow all touches on Home. Call this on leave / before popBackStack.
+     */
+    fun clearOverlays() {
+        val s = _ui.value
+        if (s.confirmSensitive == null && !s.showReauth && s.pendingSensitive == null &&
+            s.reauthPassword.isEmpty() && s.reauthCode.isEmpty() && s.reauthError == null && !s.reauthBusy
+        ) return
+        _ui.value = s.copy(
+            confirmSensitive = null,
+            showReauth = false,
+            pendingSensitive = null,
+            reauthBusy = false,
+            reauthError = null,
+            reauthPassword = "",
+            reauthCode = "",
+        )
+    }
+
+    override fun onCleared() {
+        stopPolling()
+        clearOverlays()
+        super.onCleared()
+    }
+
     /** Screenshot tests only. */
     fun seedForPreview(s: WorkbenchUiState) { _ui.value = s }
 

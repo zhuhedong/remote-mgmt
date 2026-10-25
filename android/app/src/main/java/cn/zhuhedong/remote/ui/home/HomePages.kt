@@ -143,7 +143,7 @@ private fun Loading(text: String) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ModelSheet(ui: ChatUiState, onDismiss: () -> Unit, onPick: (ModelOption) -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Dsh.c.card) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Dsh.c.card) {
         Text("选择模型", fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = Dsh.c.ink, modifier = Modifier.padding(horizontal = 24.dp))
         Text(if (ui.sessionId == null) "将用于新任务" else "仅切换当前任务", fontSize = 13.sp, color = Dsh.c.muted, modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp))
         LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
@@ -172,7 +172,7 @@ internal fun NewTaskSheet(ui: ChatUiState, onDismiss: () -> Unit, onStart: (Devi
     val defaultCwd = ui.pendingCwd ?: initialSpaces.firstOrNull()?.cwd
     var cwd by remember { mutableStateOf<String?>(defaultCwd) }
     var custom by remember { mutableStateOf("") }
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Dsh.c.card) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Dsh.c.card) {
         Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp).verticalScroll(rememberScrollState())) {
             Text("新建任务", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Dsh.c.ink)
             SectionHeader("在哪台电脑上运行")

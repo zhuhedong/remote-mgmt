@@ -67,6 +67,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -138,7 +139,22 @@ fun HomeScreen(
     val ui by vm.ui.collectAsState()
     LaunchedEffect(Unit) { vm.start() }
     var tab by rememberSaveable { mutableStateOf(initialTab) }
+    // Hoisted so we can close the drawer *before* switching tabs. Disposing
+    // ModalNavigationDrawer while open leaves a stuck scrim that eats all taps.
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    var newSheet by remember { mutableStateOf(false) }
     val tabs = listOf("任务" to Icons.Filled.ChatBubble, "定时任务" to Icons.Filled.Alarm, "发现" to Icons.Filled.Explore, "我的" to Icons.Filled.Person)
+
+    fun selectTab(i: Int) {
+        if (i == tab) return
+        scope.launch {
+            if (drawer.isOpen) runCatching { drawer.close() }
+            newSheet = false
+            tab = i
+        }
+    }
+
     Scaffold(
         containerColor = Bg,
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -149,7 +165,7 @@ fun HomeScreen(
                 windowInsets = WindowInsets.navigationBars,
             ) {
                 tabs.forEachIndexed { i, (label, icon) ->
-                    NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(icon, label) }, label = { Text(label, fontSize = 11.sp) },
+                    NavigationBarItem(selected = tab == i, onClick = { selectTab(i) }, icon = { Icon(icon, label) }, label = { Text(label, fontSize = 11.sp) },
                         colors = androidx.compose.material3.NavigationBarItemDefaults.colors(selectedIconColor = Ink, selectedTextColor = Ink, indicatorColor = Dsh.c.selected, unselectedIconColor = Muted, unselectedTextColor = Muted))
                 }
             }
@@ -157,9 +173,9 @@ fun HomeScreen(
     ) { pad ->
         Box(Modifier.padding(pad).fillMaxSize()) {
             when (tab) {
-                0 -> TasksTab(vm, ui)
-                1 -> ScheduleTab(ui, onGoChat = { tab = 0 })
-                2 -> DiscoverTab(ui, onUsePrompt = { if (ui.sessionId != null) vm.newTask(); vm.updateInput(it); tab = 0 }, onRetry = vm::retry)
+                0 -> TasksTab(vm, ui, drawer, newSheet, onNewSheet = { newSheet = it })
+                1 -> ScheduleTab(ui, onGoChat = { selectTab(0) })
+                2 -> DiscoverTab(ui, onUsePrompt = { if (ui.sessionId != null) vm.newTask(); vm.updateInput(it); selectTab(0) }, onRetry = vm::retry)
                 else -> ProfileTab(ui, username, hubBase, onOpenWorkbench, onLogout, onRefresh = vm::refreshDevices)
             }
         }
@@ -167,24 +183,36 @@ fun HomeScreen(
 }
 
 @Composable
-private fun TasksTab(vm: ChatViewModel, ui: ChatUiState) {
-    val drawer = rememberDrawerState(DrawerValue.Closed)
+private fun TasksTab(
+    vm: ChatViewModel,
+    ui: ChatUiState,
+    drawer: androidx.compose.material3.DrawerState,
+    newSheet: Boolean,
+    onNewSheet: (Boolean) -> Unit,
+) {
     val scope = rememberCoroutineScope()
-    var newSheet by remember { mutableStateOf(false) }
     fun close() = scope.launch { drawer.close() }
-    if (newSheet) NewTaskSheet(ui, onDismiss = { newSheet = false }) { d, cwd -> newSheet = false; vm.startTask(d, cwd) }
+    // Defensive: if this tab leaves composition with the drawer mid-open, force-close state.
+    DisposableEffect(drawer) {
+        onDispose {
+            if (drawer.isOpen) scope.launch { runCatching { drawer.close() } }
+            onNewSheet(false)
+        }
+    }
+    if (newSheet) NewTaskSheet(ui, onDismiss = { onNewSheet(false) }) { d, cwd -> onNewSheet(false); vm.startTask(d, cwd) }
     ModalNavigationDrawer(
         drawerState = drawer,
+        gesturesEnabled = true,
         drawerContent = {
             ModalDrawerSheet(drawerContainerColor = Dsh.c.drawer, modifier = Modifier.fillMaxWidth(0.86f).widthIn(max = 320.dp)) {
                 DrawerContent(ui, vm,
                     onOpen = { vm.openSession(it); close() },
-                    onNew = { close(); newSheet = true },
+                    onNew = { close(); onNewSheet(true) },
                     onNewInSpace = { vm.newInSpace(it); close() })
             }
         },
     ) {
-        ChatPane(vm, ui, onMenu = { scope.launch { drawer.open() } }, onNew = { newSheet = true })
+        ChatPane(vm, ui, onMenu = { scope.launch { drawer.open() } }, onNew = { onNewSheet(true) })
     }
 }
 

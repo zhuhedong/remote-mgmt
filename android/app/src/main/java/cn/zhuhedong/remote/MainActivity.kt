@@ -123,7 +123,7 @@ private fun AppNav(app: DshRemoteApp) {
                 factory = VmFactory(app.hub, id),
                 key = id,
             )
-            WorkbenchScreen(title = name, vm = vm, onBack = { nav.popBackStack() })
+            WorkbenchScreen(title = name, vm = vm, onBack = { vm.clearOverlays(); vm.stopPolling(); nav.popBackStack() })
         }
     }
 }

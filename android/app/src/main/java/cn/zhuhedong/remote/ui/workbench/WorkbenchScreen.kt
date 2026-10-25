@@ -1,6 +1,7 @@
 package cn.zhuhedong.remote.ui.workbench
 
 import androidx.compose.foundation.Canvas
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -33,16 +34,19 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,6 +63,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cn.zhuhedong.remote.data.Friendly
+import kotlinx.coroutines.launch
 import cn.zhuhedong.remote.data.InvokeResult
 import cn.zhuhedong.remote.ui.common.DshCard
 import cn.zhuhedong.remote.ui.common.ErrorState
@@ -77,73 +82,135 @@ import cn.zhuhedong.remote.viewmodel.WorkbenchViewModel
 @Composable
 fun WorkbenchScreen(title: String, vm: WorkbenchViewModel, onBack: () -> Unit, autoLoad: Boolean = true) {
     val ui by vm.ui.collectAsState()
+    val scope = rememberCoroutineScope()
+    val confirmSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val reauthSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
     LaunchedEffect(Unit) { if (autoLoad) { vm.load(); vm.pollMetrics() } }
-    Column(Modifier.fillMaxSize().background(Dsh.c.bg).statusBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Dsh.c.ink) }
-            Column(Modifier.weight(1f)) {
-                Text(title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = Dsh.c.ink, maxLines = 1)
-                val ok = ui.fatal == null && !ui.offline && ui.status?.ok == true
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    StatusDot(ok, 6.dp); Spacer(Modifier.width(4.dp))
-                    Text(if (ui.loading && ui.status == null) "连接中…" else if (ok) "在线 · 每 5 秒刷新" else "不可用", fontSize = 12.sp, color = Dsh.c.muted)
-                }
-            }
-            IconButton(onClick = vm::load, enabled = !ui.loading) { Icon(Icons.Filled.Refresh, "刷新", tint = Dsh.c.ink) }
-        }
-        val fatal = ui.fatal
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding()) {
-            when {
-                fatal != null -> Box(Modifier.fillMaxWidth().padding(top = 60.dp)) { ErrorState(fatal, vm::load) }
-                ui.loading && ui.status == null -> { Spacer(Modifier.height(8.dp)); repeat(4) { SkeletonCard(); Spacer(Modifier.height(12.dp)) } }
-                else -> DeviceBody(ui, vm)
-            }
-            Spacer(Modifier.height(32.dp))
+    // Leaving this destination must drop Dialog-hosted sheets + stop poll, or Home gets an invisible touch-blocking scrim.
+    DisposableEffect(vm) {
+        onDispose {
+            vm.clearOverlays()
+            vm.stopPolling()
         }
     }
 
-    ui.confirmSensitive?.let { p ->
-        ModalBottomSheet(onDismissRequest = vm::dismissConfirm, containerColor = Dsh.c.card) {
-            Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp)) {
-                Text(p.title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Dsh.c.ink)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    if (p.execute) "将真正执行 ${p.capabilityId}。当前版本此操作仍是 stub，不会重启电脑上的 DSH，但会被审计记录。"
-                    else "演练模式：只检查权限与前置条件，不做任何改动。",
-                    color = Dsh.c.muted, fontSize = 14.sp, lineHeight = 21.sp,
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Shield, null, tint = Dsh.c.warn, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(6.dp))
-                    Text("敏感操作需 10 分钟内重验证", fontSize = 12.sp, color = Dsh.c.warn)
-                }
-                Spacer(Modifier.height(20.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    GhostButton("取消", vm::dismissConfirm, Modifier.weight(1f))
-                    PrimaryButton(if (p.execute) "确认执行" else "开始演练", vm::confirmSensitive, Modifier.weight(1f), color = if (p.execute) Dsh.c.danger else Dsh.c.ink)
-                }
+    fun leave() {
+        vm.clearOverlays()
+        vm.stopPolling()
+        onBack()
+    }
+
+    BackHandler {
+        when {
+            ui.confirmSensitive != null -> scope.launch {
+                runCatching { confirmSheet.hide() }
+                vm.dismissConfirm()
             }
+            ui.showReauth && !ui.reauthBusy -> scope.launch {
+                runCatching { reauthSheet.hide() }
+                vm.dismissReauth()
+            }
+            else -> leave()
         }
     }
 
-    if (ui.showReauth) {
-        ModalBottomSheet(onDismissRequest = { if (!ui.reauthBusy) vm.dismissReauth() }, containerColor = Dsh.c.card) {
-            Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp)) {
-                Text("验证身份", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Dsh.c.ink)
-                Spacer(Modifier.height(6.dp))
-                Text("输入验证器 App 里的 6 位验证码（或密码），通过后自动继续刚才的操作。", color = Dsh.c.muted, fontSize = 14.sp)
-                Spacer(Modifier.height(16.dp))
-                OutlinedTextField(ui.reauthCode, { v -> vm.updateReauth { it.copy(reauthCode = v.filter(Char::isDigit).take(6)) } },
-                    label = { Text("TOTP 验证码") }, singleLine = true, enabled = !ui.reauthBusy, shape = RoundedCornerShape(14.dp),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), modifier = Modifier.fillMaxWidth())
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(ui.reauthPassword, { v -> vm.updateReauth { it.copy(reauthPassword = v) } },
-                    label = { Text("或输入密码") }, singleLine = true, enabled = !ui.reauthBusy, shape = RoundedCornerShape(14.dp),
-                    visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-                ui.reauthError?.let { Spacer(Modifier.height(8.dp)); Text(it, color = Dsh.c.danger, fontSize = 13.sp) }
-                Spacer(Modifier.height(20.dp))
-                PrimaryButton(if (ui.reauthBusy) "验证中…" else "验证并继续", vm::submitReauth, Modifier.fillMaxWidth(),
-                    enabled = !ui.reauthBusy && (ui.reauthPassword.isNotBlank() || ui.reauthCode.length == 6))
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().background(Dsh.c.bg).statusBarsPadding()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { leave() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Dsh.c.ink) }
+                Column(Modifier.weight(1f)) {
+                    Text(title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = Dsh.c.ink, maxLines = 1)
+                    val ok = ui.fatal == null && !ui.offline && ui.status?.ok == true
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StatusDot(ok, 6.dp); Spacer(Modifier.width(4.dp))
+                        Text(if (ui.loading && ui.status == null) "连接中…" else if (ok) "在线 · 每 5 秒刷新" else "不可用", fontSize = 12.sp, color = Dsh.c.muted)
+                    }
+                }
+                IconButton(onClick = vm::load, enabled = !ui.loading) { Icon(Icons.Filled.Refresh, "刷新", tint = Dsh.c.ink) }
+            }
+            val fatal = ui.fatal
+            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding()) {
+                when {
+                    fatal != null -> Box(Modifier.fillMaxWidth().padding(top = 60.dp)) { ErrorState(fatal, vm::load) }
+                    ui.loading && ui.status == null -> { Spacer(Modifier.height(8.dp)); repeat(4) { SkeletonCard(); Spacer(Modifier.height(12.dp)) } }
+                    else -> DeviceBody(ui, vm)
+                }
+                Spacer(Modifier.height(32.dp))
+            }
+        }
+
+        ui.confirmSensitive?.let { p ->
+            ModalBottomSheet(
+                onDismissRequest = {
+                    scope.launch {
+                        runCatching { confirmSheet.hide() }
+                        vm.dismissConfirm()
+                    }
+                },
+                sheetState = confirmSheet,
+                containerColor = Dsh.c.card,
+            ) {
+                Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp)) {
+                    Text(p.title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Dsh.c.ink)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        if (p.execute) "将真正执行 ${p.capabilityId}。当前版本此操作仍是 stub，不会重启电脑上的 DSH，但会被审计记录。"
+                        else "演练模式：只检查权限与前置条件，不做任何改动。",
+                        color = Dsh.c.muted, fontSize = 14.sp, lineHeight = 21.sp,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Shield, null, tint = Dsh.c.warn, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(6.dp))
+                        Text("敏感操作需 10 分钟内重验证", fontSize = 12.sp, color = Dsh.c.warn)
+                    }
+                    Spacer(Modifier.height(20.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        GhostButton("取消", {
+                            scope.launch {
+                                runCatching { confirmSheet.hide() }
+                                vm.dismissConfirm()
+                            }
+                        }, Modifier.weight(1f))
+                        PrimaryButton(if (p.execute) "确认执行" else "开始演练", {
+                            scope.launch {
+                                runCatching { confirmSheet.hide() }
+                                vm.confirmSensitive()
+                            }
+                        }, Modifier.weight(1f), color = if (p.execute) Dsh.c.danger else Dsh.c.ink)
+                    }
+                }
+            }
+        }
+
+        if (ui.showReauth) {
+            ModalBottomSheet(
+                onDismissRequest = {
+                    if (!ui.reauthBusy) scope.launch {
+                        runCatching { reauthSheet.hide() }
+                        vm.dismissReauth()
+                    }
+                },
+                sheetState = reauthSheet,
+                containerColor = Dsh.c.card,
+            ) {
+                Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp)) {
+                    Text("验证身份", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Dsh.c.ink)
+                    Spacer(Modifier.height(6.dp))
+                    Text("输入验证器 App 里的 6 位验证码（或密码），通过后自动继续刚才的操作。", color = Dsh.c.muted, fontSize = 14.sp)
+                    Spacer(Modifier.height(16.dp))
+                    OutlinedTextField(ui.reauthCode, { v -> vm.updateReauth { it.copy(reauthCode = v.filter(Char::isDigit).take(6)) } },
+                        label = { Text("TOTP 验证码") }, singleLine = true, enabled = !ui.reauthBusy, shape = RoundedCornerShape(14.dp),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(ui.reauthPassword, { v -> vm.updateReauth { it.copy(reauthPassword = v) } },
+                        label = { Text("或输入密码") }, singleLine = true, enabled = !ui.reauthBusy, shape = RoundedCornerShape(14.dp),
+                        visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                    ui.reauthError?.let { Spacer(Modifier.height(8.dp)); Text(it, color = Dsh.c.danger, fontSize = 13.sp) }
+                    Spacer(Modifier.height(20.dp))
+                    PrimaryButton(if (ui.reauthBusy) "验证中…" else "验证并继续", vm::submitReauth, Modifier.fillMaxWidth(),
+                        enabled = !ui.reauthBusy && (ui.reauthPassword.isNotBlank() || ui.reauthCode.length == 6))
+                }
             }
         }
     }
