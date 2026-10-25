@@ -26,6 +26,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
+data class SkillItem(val id: String, val name: String, val description: String, val source: String)
+
 data class ChatUiState(
     val devices: List<DeviceInstance> = emptyList(),
     val device: DeviceInstance? = null,
@@ -49,6 +51,14 @@ data class ChatUiState(
     val toast: String? = null,
     /** Active ask_user_question waiting for a tap answer. */
     val pendingAsk: AskPayload? = null,
+    /** 「+」 sheet open. */
+    val plusSheet: Boolean = false,
+    val skills: List<SkillItem> = emptyList(),
+    val skillsLoading: Boolean = false,
+    /** null = ok; otherwise message shown in the sheet (e.g. 请更新电脑端插件). */
+    val skillsError: String? = null,
+    /** Skills chosen for the next message (sent as DSH `/name` gestures by the agent). */
+    val selectedSkills: List<SkillItem> = emptyList(),
     val answeringAsk: Boolean = false,
     /** Absolute or ~/… path chosen for the next create; kept in UI state so it can't desync from [pendingSpace]. */
     val pendingCwd: String? = null,
@@ -181,6 +191,43 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         }
     }
 
+    fun openPlus(open: Boolean) {
+        set { it.copy(plusSheet = open) }
+        if (open) loadSkills()
+    }
+
+    fun toggleSkill(k: SkillItem) = set { s ->
+        s.copy(selectedSkills = if (s.selectedSkills.any { it.id == k.id }) s.selectedSkills.filter { it.id != k.id } else s.selectedSkills + k)
+    }
+
+    fun removeSkill(id: String) = set { s -> s.copy(selectedSkills = s.selectedSkills.filter { it.id != id }) }
+
+    fun loadSkills() {
+        val st = _ui.value
+        if ("chat.skills" !in st.caps) { set { it.copy(skillsError = "请更新电脑端插件", skills = emptyList()) }; return }
+        // skills/list is Session-addressed; before the first message, use a session in the chosen space.
+        val sid = st.sessionId
+            ?: st.sessions.firstOrNull { st.pendingCwd != null && it.cwd == st.pendingCwd }?.sessionId
+            ?: st.sessions.firstOrNull()?.sessionId
+        if (sid == null) { set { it.copy(skillsError = "先发一条消息创建任务后即可选择技能", skills = emptyList()) }; return }
+        viewModelScope.launch {
+            set { it.copy(skillsLoading = true, skillsError = null) }
+            val r = call("chat.skills", JSONObject().put("sessionId", sid))
+            if (noteAuth(r)) { set { it.copy(skillsLoading = false) }; return@launch }
+            if (!r.ok) {
+                val upgrade = r.code == "NOT_FOUND" || (r.message ?: "").contains("unknown capability")
+                set { it.copy(skillsLoading = false, skillsError = if (upgrade) "请更新电脑端插件" else errText(r).title) }
+                return@launch
+            }
+            val list = (r.data?.get("skills") as? List<*>).orEmpty().mapNotNull { o ->
+                val m = o as? Map<*, *> ?: return@mapNotNull null
+                val n = m["name"] as? String ?: return@mapNotNull null
+                SkillItem((m["id"] as? String) ?: n, n, (m["description"] as? String).orEmpty(), (m["source"] as? String).orEmpty())
+            }.sortedBy { it.name }
+            set { it.copy(skillsLoading = false, skills = list, skillsError = null) }
+        }
+    }
+
     fun loadModels() {
         viewModelScope.launch {
             val p = JSONObject(); _ui.value.sessionId?.let { p.put("sessionId", it) }
@@ -246,12 +293,16 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
                 _ui.value.model?.let { m -> call("models.select", JSONObject().put("sessionId", sid).put("provider", m.provider).put("model", m.model)) }
                 refreshSessions()
             }
-            val optimistic = ChatMsg(Long.MAX_VALUE, "user", text)
-            set { it.copy(input = "", messages = it.messages + optimistic, running = true) }
-            val r = call("chat.prompt", JSONObject().put("sessionId", sid).put("text", text))
-            if (noteAuth(r)) { set { it.copy(sending = false, running = false, input = text, messages = it.messages - optimistic) }; return@launch }
+            val picked = _ui.value.selectedSkills
+            val shown = if (picked.isEmpty()) text else picked.joinToString(" ") { "/" + it.name } + " " + text
+            val optimistic = ChatMsg(Long.MAX_VALUE, "user", shown)
+            set { it.copy(input = "", messages = it.messages + optimistic, running = true, selectedSkills = emptyList()) }
+            val p = JSONObject().put("sessionId", sid).put("text", text)
+            if (picked.isNotEmpty()) p.put("skills", org.json.JSONArray(picked.map { it.name }))
+            val r = call("chat.prompt", p)
+            if (noteAuth(r)) { set { it.copy(sending = false, running = false, input = text, selectedSkills = picked, messages = it.messages - optimistic) }; return@launch }
             set { it.copy(sending = false, error = if (r.ok) null else errText(r), running = r.ok) }
-            if (!r.ok) set { it.copy(input = text, messages = it.messages - optimistic) }
+            if (!r.ok) set { it.copy(input = text, selectedSkills = picked, messages = it.messages - optimistic) }
             refreshSessions()
         }
     }

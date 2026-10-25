@@ -495,9 +495,13 @@ export class ChatBridge {
     const text = typeof params.text === "string" ? params.text : "";
     if (!text.trim()) fail("VALIDATION", "text required");
     if (text.length > 20_000) fail("VALIDATION", "text too long");
+    const skillNames = Array.isArray(params.skills) ? params.skills.filter((n): n is string => typeof n === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(n)) : [];
+    if (Array.isArray(params.skills) && skillNames.length !== params.skills.length) fail("VALIDATION", "invalid skill name");
+    const prefix = skillNames.filter((n) => !new RegExp(`(^|\\s)/${n}(?=\\s|$)`).test(text)).map((n) => `/${n}`).join(" ");
+    const finalText = prefix ? `${prefix} ${text}` : text;
     const f = this.follower(sessionId);
     const requestId = typeof params.clientRequestId === "string" && params.clientRequestId ? params.clientRequestId : randomUUID();
-    const req: any = { requestId, sessionId, mode: params.mode === "steer" ? "steer" : "followup", content: [{ type: "text", text }] };
+    const req: any = { requestId, sessionId, mode: params.mode === "steer" ? "steer" : "followup", content: [{ type: "text", text: finalText }] };
     const r = unwrap(await this.ctl().prompt(req, this.sig()));
     f.markRunning(true);
     return { accepted: r?.accepted !== false, requestId, version: f.state.version };
@@ -889,6 +893,23 @@ export class ChatBridge {
   }
 
   private userQuestions: (() => any | null) | null = null;
+  private skillCatalog: (() => any | null) | null = null;
+  setSkillCatalog(fn: () => any | null) { this.skillCatalog = fn; }
+
+  /** DSH `skills/list` (sessionSkillCatalog): user-invocable skills for this Session's composition. */
+  async skills(params: Record<string, unknown>): Promise<unknown> {
+    const sessionId = reqSession(params);
+    const svc = this.skillCatalog?.();
+    if (!svc || typeof svc.list !== "function") fail("UNAVAILABLE", "DSH 技能目录不可用（sessionSkillCatalog 未挂载）");
+    const r = unwrap(await svc.list({ sessionId }, this.sig()));
+    const arr = r && Array.isArray(r.skills) ? r.skills : [];
+    const skills = arr.map((k: any) => {
+      const path = typeof k.path === "string" ? k.path : undefined;
+      const source = !path ? "builtin" : /\/plugins?\//.test(path) ? "plugin" : path.includes("/.claude/") ? "claude" : path.includes("/.agents/") ? "user" : "project";
+      return { id: String(k.name), name: String(k.name), description: String(k.description || ""), source, modelInvocable: !!k.modelInvocable };
+    });
+    return { skills };
+  }
 
   /** Optional: wire ctx.userQuestions for continued (timed) answers. */
   setUserQuestions(getter: () => any | null) { this.userQuestions = getter; }

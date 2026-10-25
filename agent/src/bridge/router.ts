@@ -84,6 +84,7 @@ export class BridgeRouter {
       case "chat.session.delete": return this.deps.chat!.sessionDelete(params);
       case "chat.history": return this.deps.chat!.history(params);
       case "chat.prompt": return this.deps.chat!.prompt(params);
+      case "chat.skills": return this.deps.chat!.skills(params);
       case "chat.follow": return this.deps.chat!.follow(params);
       case "chat.cancel": return this.deps.chat!.cancel(params);
       case "chat.answerAsk": return this.deps.chat!.answerAsk(params);

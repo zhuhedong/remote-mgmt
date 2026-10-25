@@ -142,7 +142,8 @@ export const L1_CATALOG: CapabilityDescriptor[] = [
   l1("chat.session.rename", "重命名会话", "修改会话标题", { sessionId: sid, title: { type: "string", minLength: 1, maxLength: 200 } }, ["sessionId", "title"], "chat"),
   l1("chat.session.delete", "删除会话", "删除一个 DSH 会话", { sessionId: sid }, ["sessionId"], "chat"),
   l1("chat.history", "会话历史", "按页读取会话消息", { sessionId: sid, maxMessages: { type: "integer", minimum: 1, maximum: 200 }, beforeSeq: { type: "integer", minimum: 0 } }, ["sessionId"], "chat"),
-  l1("chat.prompt", "发送消息", "向会话发送一条消息（驱动 DSH agent loop）", { sessionId: sid, text: { type: "string", minLength: 1, maxLength: 20000 }, mode: { type: "string", enum: ["followup", "steer"] }, clientRequestId: { type: "string" } }, ["sessionId", "text"], "chat"),
+  l1("chat.prompt", "发送消息", "向会话发送一条消息（驱动 DSH agent loop）", { sessionId: sid, text: { type: "string", minLength: 1, maxLength: 20000 }, mode: { type: "string", enum: ["followup", "steer"] }, clientRequestId: { type: "string" }, skills: { type: "array", maxItems: 8, items: { type: "string", pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" } } }, ["sessionId", "text"], "chat"),
+  l1("chat.skills", "技能列表", "列出该会话可用的 DSH 技能（与桌面 / 选择一致）", { sessionId: sid }, ["sessionId"], "chat", true),
   l1("chat.follow", "跟随回复", "长轮询会话状态（version 游标），流式文本在 live 字段", { sessionId: sid, version: { type: "integer" }, waitMs: { type: "integer", minimum: 0, maximum: 20000 } }, ["sessionId"], "chat", true),
   l1("chat.cancel", "停止回复", "取消当前回合", { sessionId: sid }, ["sessionId"], "chat"),
   l1("chat.answerAsk", "回答提问", "回答 ask_user_question（选项/自定义文本）", {

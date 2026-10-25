@@ -68,7 +68,7 @@ export interface BridgeDeps {
   log?: { info: (m: string) => void; warn: (m: string) => void };
 }
 
-export const AGENT_CAP_VERSION = 4;
+export const AGENT_CAP_VERSION = 5;
 
 export const emptyObjectParams: Record<string, unknown> = {
   type: "object",

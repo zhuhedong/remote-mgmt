@@ -40,6 +40,8 @@ import androidx.compose.material.icons.filled.AddComment
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Error
@@ -216,6 +218,7 @@ private fun TasksTab(
     ) {
         ChatPane(vm, ui, onMenu = { scope.launch { drawer.open() } }, onNew = { onNewSheet(true) })
     }
+    if (ui.plusSheet) PlusSheet(vm, ui, onNewTask = { vm.openPlus(false); onNewSheet(true) })
 }
 
 @Composable
@@ -719,6 +722,7 @@ private fun Composer(vm: ChatViewModel, ui: ChatUiState, onNew: () -> Unit) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).border(1.dp, CardBorder, RoundedCornerShape(24.dp)),
     ) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            if (ui.selectedSkills.isNotEmpty()) SkillChips(ui.selectedSkills) { vm.removeSkill(it) }
             Box(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                 if (ui.input.isEmpty()) Text(when { enabled -> "发消息…"; ui.l1 == false -> "升级远程插件后即可发消息"; else -> "电脑连上后即可发消息" }, color = Muted, fontSize = 17.sp)
                 BasicTextField(
@@ -737,7 +741,7 @@ private fun Composer(vm: ChatViewModel, ui: ChatUiState, onNew: () -> Unit) {
                     }
                     if (modelMenu) ModelSheet(ui, onDismiss = { modelMenu = false }) { modelMenu = false; vm.selectModel(it) }
                 }
-                IconButton(onClick = onNew) { Icon(Icons.Filled.Add, "新建", tint = Ink) }
+                IconButton(onClick = { vm.openPlus(true) }) { Icon(Icons.Filled.Add, "更多", tint = Ink) }
                 val canSend = enabled && ui.input.isNotBlank() && !ui.sending
                 Surface(
                     onClick = { if (ui.running && ui.input.isBlank()) vm.stop() else vm.send() },
@@ -758,3 +762,63 @@ private fun Composer(vm: ChatViewModel, ui: ChatUiState, onNew: () -> Unit) {
     }
 }
 
+
+
+@Composable
+private fun SkillChips(list: List<cn.zhuhedong.remote.viewmodel.SkillItem>, onRemove: (String) -> Unit) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        list.forEach { k ->
+            Surface(shape = RoundedCornerShape(14.dp), color = Dsh.c.selected) {
+                Row(Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.AutoAwesome, null, tint = Dsh.c.accent, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("/" + k.name, fontSize = 13.sp, color = Ink, maxLines = 1)
+                    Box(Modifier.size(22.dp).clip(CircleShape).clickable { onRemove(k.id) }, contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.Close, "移除技能", tint = Muted, modifier = Modifier.size(14.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlusSheet(vm: ChatViewModel, ui: ChatUiState, onNewTask: () -> Unit) {
+    var q by remember { mutableStateOf("") }
+    cn.zhuhedong.remote.ui.common.InLayoutBottomSheet(onDismiss = { vm.openPlus(false) }) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).padding(horizontal = 20.dp, vertical = 16.dp)) {
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onNewTask).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.AddComment, null, tint = Ink); Spacer(Modifier.width(10.dp)); Text("新建任务", fontSize = 16.sp, color = Ink)
+            }
+            Text("技能", fontSize = 13.sp, color = Muted, modifier = Modifier.padding(top = 10.dp, bottom = 6.dp))
+            Surface(shape = RoundedCornerShape(12.dp), color = Dsh.c.skeleton, modifier = Modifier.fillMaxWidth()) {
+                Box(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    if (q.isEmpty()) Text("搜索技能", color = Muted, fontSize = 15.sp)
+                    BasicTextField(value = q, onValueChange = { q = it }, singleLine = true, textStyle = TextStyle(fontSize = 15.sp, color = Ink), cursorBrush = SolidColor(Ink), modifier = Modifier.fillMaxWidth())
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            when {
+                ui.skillsLoading -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) }
+                ui.skillsError != null -> Text(ui.skillsError, color = Muted, fontSize = 14.sp, modifier = Modifier.padding(vertical = 16.dp))
+                else -> {
+                    val f = q.trim().lowercase()
+                    val shown = ui.skills.filter { f.isEmpty() || it.name.lowercase().contains(f) || it.description.lowercase().contains(f) }
+                    if (shown.isEmpty()) Text(if (ui.skills.isEmpty()) "暂无可用技能" else "没有匹配的技能", color = Muted, fontSize = 14.sp, modifier = Modifier.padding(vertical = 16.dp))
+                    LazyColumn(Modifier.fillMaxWidth()) {
+                        items(shown, key = { it.id }) { k ->
+                            val on = ui.selectedSkills.any { it.id == k.id }
+                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { vm.toggleSkill(k); if (!on) vm.openPlus(false) }.padding(vertical = 10.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(k.name, fontSize = 15.sp, color = Ink, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal)
+                                    if (k.description.isNotBlank()) Text(k.description, fontSize = 12.sp, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                if (on) Icon(Icons.Filled.CheckCircle, null, tint = Dsh.c.online, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

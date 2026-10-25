@@ -5286,7 +5286,7 @@ function postJSON(url, body, agent, timeout = 15e3) {
 }
 
 // src/bridge/types.ts
-var AGENT_CAP_VERSION = 4;
+var AGENT_CAP_VERSION = 5;
 var emptyObjectParams = {
   type: "object",
   properties: {},
@@ -5431,7 +5431,8 @@ var L1_CATALOG = [
   l1("chat.session.rename", "\u91CD\u547D\u540D\u4F1A\u8BDD", "\u4FEE\u6539\u4F1A\u8BDD\u6807\u9898", { sessionId: sid, title: { type: "string", minLength: 1, maxLength: 200 } }, ["sessionId", "title"], "chat"),
   l1("chat.session.delete", "\u5220\u9664\u4F1A\u8BDD", "\u5220\u9664\u4E00\u4E2A DSH \u4F1A\u8BDD", { sessionId: sid }, ["sessionId"], "chat"),
   l1("chat.history", "\u4F1A\u8BDD\u5386\u53F2", "\u6309\u9875\u8BFB\u53D6\u4F1A\u8BDD\u6D88\u606F", { sessionId: sid, maxMessages: { type: "integer", minimum: 1, maximum: 200 }, beforeSeq: { type: "integer", minimum: 0 } }, ["sessionId"], "chat"),
-  l1("chat.prompt", "\u53D1\u9001\u6D88\u606F", "\u5411\u4F1A\u8BDD\u53D1\u9001\u4E00\u6761\u6D88\u606F\uFF08\u9A71\u52A8 DSH agent loop\uFF09", { sessionId: sid, text: { type: "string", minLength: 1, maxLength: 2e4 }, mode: { type: "string", enum: ["followup", "steer"] }, clientRequestId: { type: "string" } }, ["sessionId", "text"], "chat"),
+  l1("chat.prompt", "\u53D1\u9001\u6D88\u606F", "\u5411\u4F1A\u8BDD\u53D1\u9001\u4E00\u6761\u6D88\u606F\uFF08\u9A71\u52A8 DSH agent loop\uFF09", { sessionId: sid, text: { type: "string", minLength: 1, maxLength: 2e4 }, mode: { type: "string", enum: ["followup", "steer"] }, clientRequestId: { type: "string" }, skills: { type: "array", maxItems: 8, items: { type: "string", pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" } } }, ["sessionId", "text"], "chat"),
+  l1("chat.skills", "\u6280\u80FD\u5217\u8868", "\u5217\u51FA\u8BE5\u4F1A\u8BDD\u53EF\u7528\u7684 DSH \u6280\u80FD\uFF08\u4E0E\u684C\u9762 / \u9009\u62E9\u4E00\u81F4\uFF09", { sessionId: sid }, ["sessionId"], "chat", true),
   l1("chat.follow", "\u8DDF\u968F\u56DE\u590D", "\u957F\u8F6E\u8BE2\u4F1A\u8BDD\u72B6\u6001\uFF08version \u6E38\u6807\uFF09\uFF0C\u6D41\u5F0F\u6587\u672C\u5728 live \u5B57\u6BB5", { sessionId: sid, version: { type: "integer" }, waitMs: { type: "integer", minimum: 0, maximum: 2e4 } }, ["sessionId"], "chat", true),
   l1("chat.cancel", "\u505C\u6B62\u56DE\u590D", "\u53D6\u6D88\u5F53\u524D\u56DE\u5408", { sessionId: sid }, ["sessionId"], "chat"),
   l1("chat.answerAsk", "\u56DE\u7B54\u63D0\u95EE", "\u56DE\u7B54 ask_user_question\uFF08\u9009\u9879/\u81EA\u5B9A\u4E49\u6587\u672C\uFF09", {
@@ -5881,9 +5882,13 @@ var ChatBridge = class {
     const text2 = typeof params.text === "string" ? params.text : "";
     if (!text2.trim()) fail("VALIDATION", "text required");
     if (text2.length > 2e4) fail("VALIDATION", "text too long");
+    const skillNames = Array.isArray(params.skills) ? params.skills.filter((n) => typeof n === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(n)) : [];
+    if (Array.isArray(params.skills) && skillNames.length !== params.skills.length) fail("VALIDATION", "invalid skill name");
+    const prefix = skillNames.filter((n) => !new RegExp(`(^|\\s)/${n}(?=\\s|$)`).test(text2)).map((n) => `/${n}`).join(" ");
+    const finalText = prefix ? `${prefix} ${text2}` : text2;
     const f = this.follower(sessionId);
     const requestId = typeof params.clientRequestId === "string" && params.clientRequestId ? params.clientRequestId : randomUUID();
-    const req = { requestId, sessionId, mode: params.mode === "steer" ? "steer" : "followup", content: [{ type: "text", text: text2 }] };
+    const req = { requestId, sessionId, mode: params.mode === "steer" ? "steer" : "followup", content: [{ type: "text", text: finalText }] };
     const r = unwrap(await this.ctl().prompt(req, this.sig()));
     f.markRunning(true);
     return { accepted: r?.accepted !== false, requestId, version: f.state.version };
@@ -6249,6 +6254,24 @@ var ChatBridge = class {
     return null;
   }
   userQuestions = null;
+  skillCatalog = null;
+  setSkillCatalog(fn) {
+    this.skillCatalog = fn;
+  }
+  /** DSH `skills/list` (sessionSkillCatalog): user-invocable skills for this Session's composition. */
+  async skills(params) {
+    const sessionId = reqSession(params);
+    const svc = this.skillCatalog?.();
+    if (!svc || typeof svc.list !== "function") fail("UNAVAILABLE", "DSH \u6280\u80FD\u76EE\u5F55\u4E0D\u53EF\u7528\uFF08sessionSkillCatalog \u672A\u6302\u8F7D\uFF09");
+    const r = unwrap(await svc.list({ sessionId }, this.sig()));
+    const arr = r && Array.isArray(r.skills) ? r.skills : [];
+    const skills = arr.map((k) => {
+      const path2 = typeof k.path === "string" ? k.path : void 0;
+      const source = !path2 ? "builtin" : /\/plugins?\//.test(path2) ? "plugin" : path2.includes("/.claude/") ? "claude" : path2.includes("/.agents/") ? "user" : "project";
+      return { id: String(k.name), name: String(k.name), description: String(k.description || ""), source, modelInvocable: !!k.modelInvocable };
+    });
+    return { skills };
+  }
   /** Optional: wire ctx.userQuestions for continued (timed) answers. */
   setUserQuestions(getter) {
     this.userQuestions = getter;
@@ -6571,6 +6594,8 @@ var BridgeRouter = class {
         return this.deps.chat.history(params);
       case "chat.prompt":
         return this.deps.chat.prompt(params);
+      case "chat.skills":
+        return this.deps.chat.skills(params);
       case "chat.follow":
         return this.deps.chat.follow(params);
       case "chat.cancel":
@@ -7477,6 +7502,22 @@ function apply(ctx, rawConfig) {
       });
     } catch (e) {
       log.warn(`A1 sessionController \u4E0D\u53EF\u7528: ${e.message}`);
+    }
+    try {
+      ctx.inject(["sessionSkillCatalog"], (c) => {
+        const run2 = () => {
+          const sc = c.sessionSkillCatalog || null;
+          chat.setSkillCatalog(() => sc);
+          if (sc) log.info("A1: sessionSkillCatalog \u5DF2\u63A5\u5165");
+          return () => {
+            chat.setSkillCatalog(() => null);
+          };
+        };
+        if (typeof c.effect === "function") c.effect(run2);
+        else run2();
+      });
+    } catch (e) {
+      log.warn(`skills \u76EE\u5F55\u4E0D\u53EF\u7528: ${e.message}`);
     }
     try {
       ctx.inject(["userQuestions"], (c) => {

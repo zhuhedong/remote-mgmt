@@ -226,6 +226,12 @@ export function apply(ctx: any, rawConfig: any) {
       });
     } catch (e: any) { log.warn(`A1 sessionController 不可用: ${e.message}`); }
     try {
+      ctx.inject(["sessionSkillCatalog"], (c: any) => {
+        const run = () => { const sc = c.sessionSkillCatalog || null; chat.setSkillCatalog(() => sc); if (sc) log.info("A1: sessionSkillCatalog 已接入"); return () => { chat.setSkillCatalog(() => null); }; };
+        if (typeof c.effect === "function") c.effect(run); else run();
+      });
+    } catch (e: any) { log.warn(`skills 目录不可用: ${e.message}`); }
+    try {
       // Optional: continued (timed) answers after ask timeout.
       ctx.inject(["userQuestions"], (c: any) => {
         const run = () => {
