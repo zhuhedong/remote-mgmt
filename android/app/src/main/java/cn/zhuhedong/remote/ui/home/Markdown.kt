@@ -231,7 +231,8 @@ fun inlineMd(
                 continue
             }
         }
-        // link [text](url)
+        // link [text](url) — http(s)/mailto stay tappable; relative/file paths still
+        // render as the label (never leave raw [label](path) in the bubble).
         if (s[i] == '[') {
             val close = s.indexOf(']', i + 1)
             if (close > i + 1 && close + 1 < s.length && s[close + 1] == '(') {
@@ -239,11 +240,16 @@ fun inlineMd(
                 if (urlEnd > close + 2) {
                     val label = s.substring(i + 1, close)
                     val url = s.substring(close + 2, urlEnd).trim()
-                    if (url.isNotEmpty() && (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("mailto:"))) {
-                        withLink(LinkAnnotation.Url(url)) {
-                            withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
-                                append(label)
+                    if (url.isNotEmpty()) {
+                        val style = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)
+                        val web = url.startsWith("http://") || url.startsWith("https://") || url.startsWith("mailto:")
+                        if (web) {
+                            withLink(LinkAnnotation.Url(url)) {
+                                withStyle(style) { append(label) }
                             }
+                        } else {
+                            // Relative / repo path: show label only, accent + underline (not clickable).
+                            withStyle(style) { append(label) }
                         }
                         i = urlEnd + 1
                         continue

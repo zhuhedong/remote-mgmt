@@ -661,6 +661,9 @@ private fun MdTable(headers: List<String>, rows: List<List<String>>) {
     val border = CardBorder
     val hScroll = rememberScrollState()
     val cols = maxOf(headers.size, rows.maxOfOrNull { it.size } ?: 0).coerceAtLeast(1)
+    // Horizontal scroll + min content width so columns aren't crushed by the bubble;
+    // cells run through inlineMd (links / `code` / **bold**).
+    val cellMod = Modifier.widthIn(min = 112.dp, max = 280.dp).padding(horizontal = 8.dp, vertical = 6.dp)
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = Dsh.c.card,
@@ -668,29 +671,25 @@ private fun MdTable(headers: List<String>, rows: List<List<String>>) {
     ) {
         Column(Modifier.horizontalScroll(hScroll).padding(1.dp)) {
             fun cell(i: Int, list: List<String>) = list.getOrElse(i) { "" }
-            Row(Modifier.background(Dsh.c.selected).padding(horizontal = 4.dp, vertical = 2.dp)) {
+            Row(Modifier.background(Dsh.c.selected)) {
                 for (i in 0 until cols) {
                     Text(
                         inlineMd(cell(i, headers), Dsh.c.code, Dsh.c.accent),
                         color = Ink,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.widthIn(min = 72.dp, max = 180.dp).padding(6.dp),
+                        modifier = cellMod,
                     )
                 }
             }
             rows.forEachIndexed { idx, row ->
-                Row(
-                    Modifier
-                        .background(if (idx % 2 == 0) Dsh.c.card else Dsh.c.bg)
-                        .padding(horizontal = 4.dp, vertical = 2.dp),
-                ) {
+                Row(Modifier.background(if (idx % 2 == 0) Dsh.c.card else Dsh.c.bg)) {
                     for (i in 0 until cols) {
                         Text(
                             inlineMd(cell(i, row), Dsh.c.code, Dsh.c.accent),
                             color = Ink,
                             fontSize = 13.sp,
-                            modifier = Modifier.widthIn(min = 72.dp, max = 180.dp).padding(6.dp),
+                            modifier = cellMod,
                         )
                     }
                 }

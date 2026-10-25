@@ -45,6 +45,25 @@ class ChatLogicTest {
         assertTrue(inline.text.contains("code"))
         assertTrue(!inline.text.contains("**"))
         assertTrue(!inline.text.contains("`"))
+
+        // Relative / file-path links must render the label, not raw [label](path)
+        val pathLink = cn.zhuhedong.remote.ui.home.inlineMd(
+            "[user-form-dialog.tsx](web/src/pages/system/user/user-form-dialog.tsx) 与 `deptMissing`"
+        )
+        assertEquals("user-form-dialog.tsx 与 deptMissing", pathLink.text)
+        assertTrue(!pathLink.text.contains("["))
+        assertTrue(!pathLink.text.contains("]("))
+        assertTrue(!pathLink.text.contains("web/src"))
+
+        val tableCells = parseMarkdown(
+            "| 文件 | 改动 |\n|---|---|\n| [a.tsx](web/a.tsx) | 新增 `X` 与 **粗** |"
+        )
+        val tbl = tableCells[0] as MdBlock.Table
+        assertEquals("[a.tsx](web/a.tsx)", tbl.rows[0][0]) // parser keeps raw cell MD
+        val cellAnno = cn.zhuhedong.remote.ui.home.inlineMd(tbl.rows[0][0])
+        assertEquals("a.tsx", cellAnno.text)
+        val changeAnno = cn.zhuhedong.remote.ui.home.inlineMd(tbl.rows[0][1])
+        assertEquals("新增 X 与 粗", changeAnno.text)
     }
 
     @Test fun softBreakDoesNotSplitMarkers() {
