@@ -60,6 +60,10 @@ data class ChatUiState(
     /** Skills chosen for the next message (sent as DSH `/name` gestures by the agent). */
     val selectedSkills: List<SkillItem> = emptyList(),
     val answeringAsk: Boolean = false,
+    /** Older pages fetched via chat.history (prepended before the follow window). */
+    val older: List<ChatMsg> = emptyList(),
+    val loadingOlder: Boolean = false,
+    val hasMoreOlder: Boolean = true,
     /** Absolute or ~/… path chosen for the next create; kept in UI state so it can't desync from [pendingSpace]. */
     val pendingCwd: String? = null,
     val pendingSpace: String? = null,
@@ -166,7 +170,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
 
     fun selectDevice(d: DeviceInstance) {
         stopFollow()
-        set { it.copy(device = d, l1 = null, caps = emptySet(), capsError = null, sessions = emptyList(), spaces = emptyList(), sessionId = null, messages = emptyList(), live = "", running = false, models = emptyList(), model = null, pendingCwd = null, pendingSpace = null) }
+        set { it.copy(device = d, l1 = null, caps = emptySet(), capsError = null, sessions = emptyList(), spaces = emptyList(), sessionId = null, messages = emptyList(), older = emptyList(), loadingOlder = false, hasMoreOlder = true, live = "", running = false, models = emptyList(), model = null, pendingCwd = null, pendingSpace = null) }
         viewModelScope.launch {
             val res = runCatching { withContext(Dispatchers.IO) { hub.capabilities(d.id) } }
             val caps = res.getOrNull()
@@ -239,7 +243,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
 
     fun openSession(id: String) {
         stopFollow()
-        set { it.copy(sessionId = id, messages = emptyList(), live = "", running = false, error = null, pendingCwd = null, pendingSpace = null) }
+        set { it.copy(sessionId = id, messages = emptyList(), older = emptyList(), loadingOlder = false, hasMoreOlder = true, live = "", running = false, error = null, pendingCwd = null, pendingSpace = null) }
         startFollow(id)
         loadModels()
     }
@@ -247,13 +251,13 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
     /** Blank composer with no project; session is created on first send. */
     fun newTask() {
         stopFollow()
-        set { it.copy(pendingCwd = null, pendingSpace = null, sessionId = null, messages = emptyList(), live = "", running = false, error = null) }
+        set { it.copy(pendingCwd = null, pendingSpace = null, sessionId = null, messages = emptyList(), older = emptyList(), loadingOlder = false, hasMoreOlder = true, live = "", running = false, error = null) }
     }
 
     fun newInSpace(cwd: String) {
         stopFollow()
         val c = cwd.trim().ifBlank { null }
-        set { it.copy(pendingCwd = c, pendingSpace = c, sessionId = null, messages = emptyList(), live = "", running = false, pendingAsk = null, error = null) }
+        set { it.copy(pendingCwd = c, pendingSpace = c, sessionId = null, messages = emptyList(), older = emptyList(), loadingOlder = false, hasMoreOlder = true, live = "", running = false, pendingAsk = null, error = null) }
     }
 
     fun updateInput(s: String) = set { it.copy(input = s) }
@@ -378,7 +382,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         if (device != null && device.id != _ui.value.device?.id) selectDevice(device)
         val c = cwd?.trim()?.ifBlank { null }
         stopFollow()
-        set { it.copy(pendingCwd = c, pendingSpace = c, sessionId = null, messages = emptyList(), live = "", running = false, pendingAsk = null, error = null) }
+        set { it.copy(pendingCwd = c, pendingSpace = c, sessionId = null, messages = emptyList(), older = emptyList(), loadingOlder = false, hasMoreOlder = true, live = "", running = false, pendingAsk = null, error = null) }
     }
 
     fun renameSession(id: String, title: String) {
@@ -443,7 +447,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
                                     }
                                 }
                             it.copy(
-                                messages = f.messages,
+                                messages = mergeHistory(it.older, f.messages),
                                 live = f.live,
                                 running = f.running || it.sending,
                                 pendingAsk = mergedAsk,
@@ -463,11 +467,49 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         }
     }
 
+    /** Scroll-to-top pager: chat.history(beforeSeq) exists since agent A1, so works with 0.2.5. */
+    fun loadOlder() {
+        val st = _ui.value
+        val sid = st.sessionId ?: return
+        if (st.loadingOlder || !st.hasMoreOlder) return
+        val before = st.messages.map { it.seq }.filter { it > 0 }.minOrNull()
+        if (before == null) { if (st.messages.isNotEmpty()) set { it.copy(hasMoreOlder = false) }; return }
+        set { it.copy(loadingOlder = true) }
+        viewModelScope.launch {
+            val r = try {
+                call("chat.history", JSONObject().put("sessionId", sid).put("maxMessages", 50).put("beforeSeq", before))
+            } catch (e: Exception) {
+                InvokeResult(false, "", code = "NETWORK", message = e.message, httpStatus = 0)
+            }
+            if (_ui.value.sessionId != sid) return@launch
+            if (!r.ok) {
+                val unsupported = r.code == "UNKNOWN_CAPABILITY" || r.code == "NOT_FOUND" || r.code == "VALIDATION"
+                set { it.copy(loadingOlder = false, hasMoreOlder = !unsupported && it.hasMoreOlder) }
+                return@launch
+            }
+            val page = ChatParse.messages(r.data?.get("messages")).filter { it.seq in 1 until before }
+            val more = r.data?.get("hasMore") == true && page.isNotEmpty()
+            set { cur ->
+                val older = (page + cur.older).distinctBy { Triple(it.seq, it.role, it.callId) }.sortedBy { it.seq }
+                cur.copy(older = older, messages = mergeHistory(older, cur.messages), loadingOlder = false, hasMoreOlder = more)
+            }
+        }
+    }
+
     private fun stopFollow() { followJob?.cancel(); followJob = null }
 
     override fun onCleared() { stopFollow() }
 
     companion object {
+        /** Older pages strictly before the first live message, then the live window. */
+        fun mergeHistory(older: List<ChatMsg>, live: List<ChatMsg>): List<ChatMsg> {
+            val firstLive = live.map { it.seq }.filter { it > 0 }.minOrNull() ?: Long.MAX_VALUE
+            val liveKeys = live.map { Triple(it.seq, it.role, it.callId) }.toHashSet()
+            val head = older.filter { it.seq in 1 until firstLive && Triple(it.seq, it.role, it.callId) !in liveKeys }
+            val tail = live.filter { m -> head.none { it.seq == m.seq && it.role == m.role && it.callId == m.callId } }
+            return head + tail
+        }
+
         /** True when create landed in the project the user picked (handles ~/… vs absolute). */
         fun cwdMatches(pending: String?, actual: String?): Boolean {
             if (pending.isNullOrBlank()) return true

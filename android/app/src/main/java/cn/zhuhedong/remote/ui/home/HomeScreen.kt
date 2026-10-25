@@ -74,6 +74,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -347,17 +348,40 @@ private fun ChatPane(vm: ChatViewModel, ui: ChatUiState, onMenu: () -> Unit, onN
         ui.toast?.let { Text(it, color = Muted, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
         val chatItems = remember(ui.messages, ui.live, ui.pendingAsk) { groupChat(ui.messages, ui.live, ui.pendingAsk) }
         val listState = rememberLazyListState()
-        LaunchedEffect(chatItems.size, ui.live.length) {
-            if (chatItems.isEmpty()) return@LaunchedEffect
-            // Wait a frame so LazyColumn has laid out; never scroll past last index (resume crash).
+        // Index 0 is the header (加载中 / spacer), chat items start at 1.
+        val prev = remember(ui.sessionId) { mutableStateOf<Pair<Int, ChatItem?>>(0 to null) }
+        LaunchedEffect(chatItems, ui.live.length) {
+            if (chatItems.isEmpty()) { prev.value = 0 to null; return@LaunchedEffect }
+            val (oldSize, oldFirst) = prev.value
+            prev.value = chatItems.size to chatItems.first()
             kotlinx.coroutines.yield()
-            val last = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
-            if (last > 0) runCatching { listState.animateScrollToItem(last) }
+            val info = listState.layoutInfo
+            val total = info.totalItemsCount
+            if (total <= 0) return@LaunchedEffect
+            if (oldSize == 0) { runCatching { listState.scrollToItem(total - 1) }; return@LaunchedEffect }
+            val grewTop = oldFirst != null && chatItems.first() != oldFirst && chatItems.size > oldSize &&
+                chatItems.indexOf(oldFirst).let { it > 0 }
+            if (grewTop) {
+                // Prepended an older page: keep the viewport on the same message.
+                val delta = chatItems.indexOf(oldFirst)
+                runCatching { listState.scrollToItem((listState.firstVisibleItemIndex + delta).coerceAtMost(total - 1), listState.firstVisibleItemScrollOffset) }
+                return@LaunchedEffect
+            }
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+            if (lastVisible >= total - 4) runCatching { listState.animateScrollToItem(total - 1) }
+        }
+        val nearTop by remember { derivedStateOf { listState.firstVisibleItemIndex <= 1 } }
+        LaunchedEffect(nearTop, ui.sessionId, ui.hasMoreOlder, ui.loadingOlder, chatItems.size) {
+            if (nearTop && chatItems.isNotEmpty() && ui.hasMoreOlder && !ui.loadingOlder) vm.loadOlder()
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (chatItems.isEmpty()) ChatEmpty(ui, vm, Modifier.align(Alignment.Center))
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                item { Spacer(Modifier.height(4.dp)) }
+                item {
+                    if (ui.loadingOlder) Box(Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) { InProgress("加载中") }
+                    else if (!ui.hasMoreOlder && chatItems.isNotEmpty()) Text("没有更早的消息了", color = Muted, fontSize = 12.sp, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    else Spacer(Modifier.height(4.dp))
+                }
                 items(chatItems) { ChatItemView(it, ui.running, ui.answeringAsk) { callId, answers, customs -> vm.answerAsk(callId, answers, customs) } }
                 if (ui.running && ui.live.isBlank() && chatItems.lastOrNull() !is ChatItem.Steps && chatItems.none { it is ChatItem.Ask && !it.answered }) item { InProgress("进行中") }
                 item { Spacer(Modifier.height(8.dp)) }
