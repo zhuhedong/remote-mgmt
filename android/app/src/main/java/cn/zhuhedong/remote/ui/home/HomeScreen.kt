@@ -4,7 +4,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +17,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -84,6 +88,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import cn.zhuhedong.remote.data.AskPayload
+import cn.zhuhedong.remote.data.AskQuestion
 import cn.zhuhedong.remote.data.ChatMsg
 import cn.zhuhedong.remote.data.ChatSession
 import cn.zhuhedong.remote.data.DeviceInstance
@@ -101,6 +107,24 @@ private val Ink: Color @Composable get() = Dsh.c.ink
 private val Online: Color @Composable get() = Dsh.c.online
 private val UserBubble: Color @Composable get() = Dsh.c.userBubble
 
+
+/** Insert zero-width spaces so long JSON/tokens wrap on narrow phones instead of clipping. */
+private fun softBreak(text: String, every: Int = 32): String {
+    if (text.length < every) return text
+    val out = StringBuilder(text.length + text.length / every)
+    var run = 0
+    for (ch in text) {
+        out.append(ch)
+        if (ch.isWhitespace()) run = 0
+        else {
+            run++
+            if (run >= every) { out.append('\u200B'); run = 0 }
+        }
+    }
+    return out.toString()
+}
+
+
 /** Main shell modelled on WorkBuddy: chat-first 任务 tab with a left drawer + bottom tabs. */
 @Composable
 fun HomeScreen(
@@ -117,8 +141,13 @@ fun HomeScreen(
     val tabs = listOf("任务" to Icons.Filled.ChatBubble, "定时任务" to Icons.Filled.Alarm, "发现" to Icons.Filled.Explore, "我的" to Icons.Filled.Person)
     Scaffold(
         containerColor = Bg,
+        contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
-            NavigationBar(containerColor = Bg, tonalElevation = 0.dp) {
+            NavigationBar(
+                containerColor = Bg,
+                tonalElevation = 0.dp,
+                windowInsets = WindowInsets.navigationBars,
+            ) {
                 tabs.forEachIndexed { i, (label, icon) ->
                     NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(icon, label) }, label = { Text(label, fontSize = 11.sp) },
                         colors = androidx.compose.material3.NavigationBarItemDefaults.colors(selectedIconColor = Ink, selectedTextColor = Ink, indicatorColor = Dsh.c.selected, unselectedIconColor = Muted, unselectedTextColor = Muted))
@@ -147,7 +176,7 @@ private fun TasksTab(vm: ChatViewModel, ui: ChatUiState) {
     ModalNavigationDrawer(
         drawerState = drawer,
         drawerContent = {
-            ModalDrawerSheet(drawerContainerColor = Dsh.c.drawer, modifier = Modifier.width(300.dp)) {
+            ModalDrawerSheet(drawerContainerColor = Dsh.c.drawer, modifier = Modifier.fillMaxWidth(0.86f).widthIn(max = 320.dp)) {
                 DrawerContent(ui, vm,
                     onOpen = { vm.openSession(it); close() },
                     onNew = { close(); newSheet = true },
@@ -283,7 +312,7 @@ private fun ChatPane(vm: ChatViewModel, ui: ChatUiState, onMenu: () -> Unit, onN
         }
         ui.error?.let { e -> ErrorBanner(e, onDismiss = vm::clearError, onAction = { vm.clearError(); vm.retry() }) }
         ui.toast?.let { Text(it, color = Muted, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
-        val chatItems = remember(ui.messages, ui.live) { groupChat(ui.messages, ui.live) }
+        val chatItems = remember(ui.messages, ui.live, ui.pendingAsk) { groupChat(ui.messages, ui.live, ui.pendingAsk) }
         val listState = rememberLazyListState()
         LaunchedEffect(chatItems.size, ui.live.length) {
             if (chatItems.isEmpty()) return@LaunchedEffect
@@ -294,10 +323,10 @@ private fun ChatPane(vm: ChatViewModel, ui: ChatUiState, onMenu: () -> Unit, onN
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (chatItems.isEmpty()) ChatEmpty(ui, vm, Modifier.align(Alignment.Center))
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 item { Spacer(Modifier.height(4.dp)) }
-                items(chatItems) { ChatItemView(it, ui.running) }
-                if (ui.running && ui.live.isBlank() && chatItems.lastOrNull() !is ChatItem.Steps) item { InProgress("进行中") }
+                items(chatItems) { ChatItemView(it, ui.running, ui.answeringAsk) { callId, answers, customs -> vm.answerAsk(callId, answers, customs) } }
+                if (ui.running && ui.live.isBlank() && chatItems.lastOrNull() !is ChatItem.Steps && chatItems.none { it is ChatItem.Ask && !it.answered }) item { InProgress("进行中") }
                 item { Spacer(Modifier.height(8.dp)) }
             }
         }
@@ -322,15 +351,152 @@ private fun InProgress(label: String) {
 }
 
 @Composable
-private fun ChatItemView(item: ChatItem, running: Boolean) {
+private fun ChatItemView(
+    item: ChatItem,
+    running: Boolean,
+    answering: Boolean = false,
+    onAnswer: (callId: String, answers: List<Pair<String, List<String>>>, customs: Map<String, String>) -> Unit = { _, _, _ -> },
+) {
     when (item) {
         is ChatItem.User -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            Surface(shape = RoundedCornerShape(20.dp), color = UserBubble, modifier = Modifier.widthIn(max = 300.dp)) {
-                Text(item.msg.text, color = Ink, fontSize = 16.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+            Surface(shape = RoundedCornerShape(20.dp), color = UserBubble, modifier = Modifier.fillMaxWidth(0.86f)) {
+                Text(softBreak(item.msg.text), color = Ink, fontSize = 16.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
             }
         }
         is ChatItem.Assistant -> MarkdownText(item.text)
         is ChatItem.Steps -> StepsCard(item.steps, running && item.running)
+        is ChatItem.Ask -> AskCard(item.ask, answered = item.answered, busy = answering, onSubmit = onAnswer)
+    }
+}
+
+@Composable
+private fun AskCard(
+    ask: AskPayload,
+    answered: Boolean,
+    busy: Boolean,
+    onSubmit: (callId: String, answers: List<Pair<String, List<String>>>, customs: Map<String, String>) -> Unit,
+) {
+    val selected = remember(ask.callId) { mutableStateMapOf<String, Set<String>>() }
+    val customs = remember(ask.callId) { mutableStateMapOf<String, String>() }
+    val locked = answered || busy
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = Dsh.c.card,
+        modifier = Modifier.fillMaxWidth().border(1.dp, CardBorder, RoundedCornerShape(16.dp)),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                if (answered) "已回答" else "需要你确认",
+                color = Muted,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            ask.questions.forEach { q ->
+                AskQuestionBlock(
+                    question = q,
+                    selected = selected[q.id].orEmpty(),
+                    custom = customs[q.id] ?: "",
+                    locked = locked,
+                    onToggle = { label ->
+                        if (locked) return@AskQuestionBlock
+                        val cur = selected[q.id].orEmpty()
+                        selected[q.id] = if (q.multiSelect) {
+                            if (label in cur) cur - label else cur + label
+                        } else {
+                            setOf(label)
+                        }
+                        if (!q.multiSelect) customs[q.id] = ""
+                    },
+                    onCustom = { text ->
+                        if (locked) return@AskQuestionBlock
+                        customs[q.id] = text
+                        if (!q.multiSelect && text.isNotBlank()) selected[q.id] = emptySet()
+                    },
+                )
+            }
+            if (!answered) {
+                val canSubmit = ask.questions.all { q ->
+                    val sel = selected[q.id].orEmpty()
+                    val custom = customs[q.id].orEmpty().trim()
+                    sel.isNotEmpty() || custom.isNotEmpty()
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(
+                        enabled = canSubmit && !busy,
+                        onClick = {
+                            val answers = ask.questions.map { q ->
+                                q.id to (selected[q.id]?.toList() ?: emptyList())
+                            }
+                            onSubmit(ask.callId, answers, customs.toMap())
+                        },
+                    ) {
+                        if (busy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Ink)
+                        else Text("提交", color = Ink, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AskQuestionBlock(
+    question: AskQuestion,
+    selected: Set<String>,
+    custom: String,
+    locked: Boolean,
+    onToggle: (String) -> Unit,
+    onCustom: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        question.header?.takeIf { it.isNotBlank() }?.let {
+            Text(it, color = Muted, fontSize = 12.sp)
+        }
+        Text(question.question, color = Ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        question.options.forEachIndexed { idx, opt ->
+            val on = opt.label in selected
+            Surface(
+                onClick = { onToggle(opt.label) },
+                enabled = !locked,
+                shape = RoundedCornerShape(12.dp),
+                color = if (on) Dsh.c.userBubble else Dsh.c.bg,
+                modifier = Modifier.fillMaxWidth().border(1.dp, if (on) Ink.copy(alpha = 0.35f) else CardBorder, RoundedCornerShape(12.dp)),
+            ) {
+                Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (question.multiSelect) (if (on) "☑" else "☐") else "${idx + 1}",
+                        color = if (on) Ink else Muted,
+                        fontSize = 14.sp,
+                        modifier = Modifier.width(22.dp),
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(opt.label, color = Ink, fontSize = 15.sp)
+                        opt.description?.takeIf { it.isNotBlank() }?.let {
+                            Text(it, color = Muted, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+        // Free-text fallback
+        BasicTextField(
+            value = custom,
+            onValueChange = onCustom,
+            enabled = !locked,
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(color = Ink, fontSize = 14.sp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, CardBorder, RoundedCornerShape(10.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            decorationBox = { inner ->
+                Box {
+                    if (custom.isEmpty()) Text("其他（可选）…", color = Muted, fontSize = 14.sp)
+                    inner()
+                }
+            },
+        )
     }
 }
 
@@ -368,15 +534,30 @@ private fun StepsCard(steps: List<ChatMsg>, active: Boolean) {
 
 @Composable
 fun MarkdownText(text: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         parseMarkdown(text).forEach { b ->
             when (b) {
-                is MdBlock.Heading -> Text(inlineMd(b.text, Dsh.c.code), fontSize = (22 - b.level * 2).coerceAtLeast(15).sp, fontWeight = FontWeight.SemiBold, color = Ink)
-                is MdBlock.Bullet -> Row { Text(b.marker + " ", color = Ink, fontSize = 16.sp); Text(inlineMd(b.text, Dsh.c.code), color = Ink, fontSize = 16.sp, lineHeight = 24.sp) }
-                is MdBlock.Code -> Surface(shape = RoundedCornerShape(10.dp), color = Dsh.c.code, modifier = Modifier.fillMaxWidth()) {
-                    Text(b.code, fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = Ink, modifier = Modifier.horizontalScroll(rememberScrollState()).padding(12.dp))
+                is MdBlock.Heading -> Text(inlineMd(softBreak(b.text, 24), Dsh.c.code), fontSize = (22 - b.level * 2).coerceAtLeast(15).sp, fontWeight = FontWeight.SemiBold, color = Ink, modifier = Modifier.fillMaxWidth())
+                is MdBlock.Bullet -> Row(Modifier.fillMaxWidth()) {
+                    Text(b.marker + " ", color = Ink, fontSize = 16.sp)
+                    Text(inlineMd(softBreak(b.text, 28), Dsh.c.code), color = Ink, fontSize = 16.sp, lineHeight = 24.sp, modifier = Modifier.weight(1f))
                 }
-                is MdBlock.Para -> Text(inlineMd(b.text, Dsh.c.code), color = Ink, fontSize = 16.sp, lineHeight = 25.sp)
+                is MdBlock.Code -> Surface(shape = RoundedCornerShape(10.dp), color = Dsh.c.code, modifier = Modifier.fillMaxWidth()) {
+                    val vScroll = rememberScrollState()
+                    Text(
+                        softBreak(b.code, 28),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        color = Ink,
+                        softWrap = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 260.dp)
+                            .verticalScroll(vScroll)
+                            .padding(12.dp),
+                    )
+                }
+                is MdBlock.Para -> Text(inlineMd(softBreak(b.text, 28), Dsh.c.code), color = Ink, fontSize = 16.sp, lineHeight = 25.sp, modifier = Modifier.fillMaxWidth())
             }
         }
     }

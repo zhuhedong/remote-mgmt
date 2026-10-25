@@ -8,6 +8,25 @@ import { randomUUID } from "node:crypto";
 import { homedir as osHomedir } from "node:os";
 import path from "node:path";
 
+export interface AskOption {
+  label: string;
+  description?: string;
+}
+
+export interface AskQuestion {
+  id: string;
+  question: string;
+  header?: string;
+  options?: AskOption[];
+  multiSelect?: boolean;
+}
+
+/** Structured ask_user_question payload for mobile UI. */
+export interface AskPayload {
+  callId: string;
+  questions: AskQuestion[];
+}
+
 export interface ChatMessage {
   seq: number;
   role: "user" | "assistant" | "step";
@@ -17,6 +36,14 @@ export interface ChatMessage {
   status?: "running" | "done" | "error";
   callId?: string;
   time?: number;
+  /** When name is ask_user_question, parsed arguments for native UI. */
+  ask?: AskPayload;
+}
+
+export interface AskAnswerItem {
+  id: string;
+  selected: string[];
+  custom?: string;
 }
 
 export interface FollowState {
@@ -27,6 +54,8 @@ export interface FollowState {
   live: string;
   running: boolean;
   error: string | null;
+  /** Active ask_user_question waiting for a mobile answer (mirrors waterfall park). */
+  pendingAsk: AskPayload | null;
 }
 
 function fail(code: string, message: string): never {
@@ -85,6 +114,40 @@ function basename(p: string): string {
 
 const MAX_MESSAGES = 80;
 
+
+/** Parse ask_user_question tool arguments into a stable AskPayload. */
+export function parseAskArguments(callId: string, raw: unknown): AskPayload | undefined {
+  let args: any = raw;
+  if (typeof args === "string") {
+    try { args = JSON.parse(args); } catch { return undefined; }
+  }
+  if (!args || typeof args !== "object") return undefined;
+  const list = Array.isArray(args.questions) ? args.questions : null;
+  if (!list || list.length === 0) return undefined;
+  const questions: AskQuestion[] = [];
+  for (const q of list) {
+    if (!q || typeof q !== "object") continue;
+    const id = typeof q.id === "string" ? q.id : "";
+    const question = typeof q.question === "string" ? q.question : "";
+    if (!id || !question) continue;
+    const options = Array.isArray(q.options)
+      ? q.options.map((o: any) => ({
+          label: String(o?.label ?? ""),
+          ...(typeof o?.description === "string" ? { description: o.description } : {}),
+        })).filter((o: AskOption) => o.label)
+      : undefined;
+    questions.push({
+      id,
+      question,
+      ...(typeof q.header === "string" ? { header: q.header } : {}),
+      ...(options && options.length ? { options } : {}),
+      ...((q.multi_select === true || q.multiSelect === true) ? { multiSelect: true } : {}),
+    });
+  }
+  if (!questions.length) return undefined;
+  return { callId: callId || "unknown", questions };
+}
+
 /** Fold one durable Session wire event into the message list. Exported for tests. */
 export function applyEvent(msgs: ChatMessage[], ev: any): boolean {
   if (!ev || typeof ev.type !== "string") return false;
@@ -111,7 +174,17 @@ export function applyEvent(msgs: ChatMessage[], ev: any): boolean {
     case "developer/message":
       return false;
     case "tool/call": {
-      msgs.push({ seq, role: "step", text: String(d.name || "tool"), name: String(d.name || "tool"), status: "running", callId: d.callId, time });
+      const name = String(d.name || "tool");
+      const callId = typeof d.callId === "string" ? d.callId : undefined;
+      const ask = name === "ask_user_question" || name === "request_user_input"
+        ? parseAskArguments(callId || `seq-${seq}`, d.arguments ?? d.input ?? d.params)
+        : undefined;
+      msgs.push({
+        seq, role: "step",
+        text: ask ? (ask.questions[0]?.header || ask.questions[0]?.question || name) : name,
+        name, status: "running", callId, time,
+        ...(ask ? { ask } : {}),
+      });
       return true;
     }
     case "tool/result": {
@@ -146,7 +219,7 @@ class Follower {
   closed = false;
 
   constructor(private ctl: any, sessionId: string, private onClose: () => void) {
-    this.state = { sessionId, version: 0, cursor: -1, messages: [], live: "", running: false, error: null };
+    this.state = { sessionId, version: 0, cursor: -1, messages: [], live: "", running: false, error: null, pendingAsk: null };
     void this.run();
   }
 
@@ -183,6 +256,7 @@ class Follower {
           const active = f.assistantStream && f.assistantStream.activeAttempt;
           this.state.live = active ? (active.stream?.text ?? "") : "";
           this.state.running = Boolean(active);
+          this.syncPendingAskFromMessages();
           this.bump();
         } else if (f.type === "event") {
           const ev = f.event;
@@ -191,6 +265,7 @@ class Follower {
           if (ev?.type === "assistant/message") this.state.live = "";
           if (ev?.type === "turn/start") this.state.running = true;
           if (ev?.type === "turn/end" || ev?.type === "agent/idle") { this.state.running = false; this.state.live = ""; }
+          if (ev?.type === "tool/call" || ev?.type === "tool/result") this.syncPendingAskFromMessages();
           this.bump();
         } else if (f.type === "assistant-stream") {
           const fr = f.frame || {};
@@ -206,6 +281,34 @@ class Follower {
       this.closed = true;
       this.onClose();
     }
+  }
+
+  setPendingAsk(ask: AskPayload | null) {
+    const prev = this.state.pendingAsk?.callId;
+    const next = ask?.callId;
+    if (prev === next && (ask == null) === (this.state.pendingAsk == null)) return;
+    this.state.pendingAsk = ask;
+    this.bump();
+  }
+
+  clearPendingAsk(callId?: string) {
+    if (!this.state.pendingAsk) return;
+    if (callId && this.state.pendingAsk.callId !== callId) return;
+    this.state.pendingAsk = null;
+    this.bump();
+  }
+
+  /** Refresh pendingAsk from the latest running ask_user_question step. */
+  syncPendingAskFromMessages() {
+    let found: AskPayload | undefined;
+    for (let i = this.state.messages.length - 1; i >= 0; i--) {
+      const m = this.state.messages[i];
+      if (m.role === "step" && m.status === "running" && m.ask) { found = m.ask; break; }
+    }
+    const cur = this.state.pendingAsk;
+    if ((found?.callId || null) === (cur?.callId || null) && Boolean(found) === Boolean(cur)) return;
+    this.state.pendingAsk = found ?? null;
+    // bump called by caller after applyEvent
   }
 
   close() { this.abort.abort(); this.closed = true; this.bump(); }
@@ -390,7 +493,158 @@ export class ChatBridge {
     return { selection: r ?? { provider, model } };
   }
 
+  private parks = new Map<string, {
+    callId: string;
+    questions: AskQuestion[];
+    resolve: (v: { answers: AskAnswerItem[] }) => void;
+    reject: (e: unknown) => void;
+    cleanup: () => void;
+  }>();
+
+  /**
+   * Host waterfall handler: race Desktop Web UI (next) with a remote park so the
+   * phone can answer ask_user_question. First successful answer wins.
+   */
+  raceUserQuestion(request: any, next: () => any): Promise<{ answers: AskAnswerItem[] }> {
+    const callId = typeof request?.wait?.callId === "string" && request.wait.callId
+      ? request.wait.callId
+      : randomUUID();
+    const questions = Array.isArray(request?.questions) ? request.questions : [];
+    const park = this.parkAsk(callId, questions, request?.signal);
+
+    let desktop: Promise<any>;
+    try {
+      desktop = Promise.resolve(next());
+    } catch (e) {
+      return park;
+    }
+
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const win = (value: any, from: "remote" | "desktop") => {
+        if (done) return;
+        done = true;
+        if (from === "desktop") this.dropPark(callId);
+        resolve(value);
+      };
+      park.then((v) => win(v, "remote"), (err: any) => {
+        if (done) return;
+        if (err && err.code === "SUPERSEDED") return;
+        // park aborted — wait for desktop unless already done
+        desktop.then((v) => win(v, "desktop"), reject);
+      });
+      desktop.then((v) => win(v, "desktop"), (_err) => {
+        // Desktop declined (NO_PROVIDER / no session) — remote only
+        if (done) return;
+        park.then((v) => win(v, "remote"), reject);
+      });
+    });
+  }
+
+  private parkAsk(callId: string, questions: AskQuestion[], signal?: AbortSignal): Promise<{ answers: AskAnswerItem[] }> {
+    this.dropPark(callId);
+    const ask: AskPayload = {
+      callId,
+      questions: questions.map((q: any) => ({
+        id: String(q.id),
+        question: String(q.question ?? ""),
+        ...(typeof q.header === "string" ? { header: q.header } : {}),
+        ...(Array.isArray(q.options) ? {
+          options: q.options.map((o: any) => ({
+            label: String(o?.label ?? ""),
+            ...(typeof o?.description === "string" ? { description: o.description } : {}),
+          })).filter((o: AskOption) => o.label),
+        } : {}),
+        ...((q.multiSelect === true || q.multi_select === true) ? { multiSelect: true } : {}),
+      })),
+    };
+    // Surface on every active follower so the phone UI can render without waiting for tool/call parse.
+    for (const f of this.followers.values()) {
+      if (!f.closed) f.setPendingAsk(ask);
+    }
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        signal?.removeEventListener?.("abort", onAbort);
+        this.parks.delete(callId);
+      };
+      const onAbort = () => {
+        cleanup();
+        for (const f of this.followers.values()) f.clearPendingAsk(callId);
+        reject(Object.assign(new Error("ask aborted"), { code: "ABORTED" }));
+      };
+      if (signal?.aborted) { onAbort(); return; }
+      signal?.addEventListener?.("abort", onAbort);
+      this.parks.set(callId, {
+        callId,
+        questions: ask.questions,
+        resolve: (v) => { cleanup(); for (const f of this.followers.values()) f.clearPendingAsk(callId); resolve(v); },
+        reject: (e) => { cleanup(); for (const f of this.followers.values()) f.clearPendingAsk(callId); reject(e); },
+        cleanup,
+      });
+    });
+  }
+
+  dropPark(callId?: string) {
+    if (!callId) return;
+    const p = this.parks.get(callId);
+    if (!p) return;
+    // Resolve as superseded so raceUserQuestion's park branch does not hang.
+    try { p.reject(Object.assign(new Error("superseded"), { code: "SUPERSEDED" })); } catch {}
+    p.cleanup();
+    this.parks.delete(callId);
+    for (const f of this.followers.values()) f.clearPendingAsk(callId);
+  }
+
+  /** App submits answers for a parked ask_user_question. */
+  async answerAsk(params: Record<string, unknown>): Promise<unknown> {
+    const callId = typeof params.callId === "string" ? params.callId : "";
+    if (!callId) fail("VALIDATION", "callId required");
+    const raw = params.answers;
+    if (!Array.isArray(raw) || raw.length === 0) fail("VALIDATION", "answers required");
+    const answers: AskAnswerItem[] = [];
+    for (const a of raw) {
+      if (!a || typeof a !== "object") continue;
+      const id = typeof (a as any).id === "string" ? (a as any).id : "";
+      const selected = Array.isArray((a as any).selected)
+        ? (a as any).selected.filter((x: unknown) => typeof x === "string")
+        : [];
+      if (!id) continue;
+      const item: AskAnswerItem = { id, selected };
+      if (typeof (a as any).custom === "string" && (a as any).custom.trim()) item.custom = String((a as any).custom);
+      answers.push(item);
+    }
+    if (!answers.length) fail("VALIDATION", "answers required");
+    const park = this.parks.get(callId);
+    if (park) {
+      park.resolve({ answers });
+      return { ok: true, callId, via: "waterfall" };
+    }
+    // No live park: try continued answer via injected userQuestions (timed mode after timeout).
+    const uq = this.userQuestions?.();
+    const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+    if (uq && typeof uq.answer === "function" && sessionId) {
+      try {
+        const agent = typeof uq.agentOf === "function" ? uq.agentOf(sessionId) : sessionId;
+        unwrap(await uq.answer(agent, callId, { answers }));
+        for (const f of this.followers.values()) f.clearPendingAsk(callId);
+        return { ok: true, callId, via: "continued" };
+      } catch (e: any) {
+        fail(e?.code || "DSH_ERROR", e?.message || "userQuestions.answer failed");
+      }
+    }
+    fail("NOT_FOUND", "没有等待中的提问（callId 无效或已结束）");
+  }
+
+  private userQuestions: (() => any | null) | null = null;
+
+  /** Optional: wire ctx.userQuestions for continued (timed) answers. */
+  setUserQuestions(getter: () => any | null) { this.userQuestions = getter; }
+
   dispose() {
+    for (const p of this.parks.values()) {
+      try { p.reject(Object.assign(new Error("disposed"), { code: "ABORTED" })); } catch {}
+    }
+    this.parks.clear();
     for (const f of this.followers.values()) f.close();
     this.followers.clear();
     if (this.sweeper) { clearInterval(this.sweeper); this.sweeper = null; }

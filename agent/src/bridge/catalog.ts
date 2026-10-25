@@ -145,6 +145,23 @@ export const L1_CATALOG: CapabilityDescriptor[] = [
   l1("chat.prompt", "发送消息", "向会话发送一条消息（驱动 DSH agent loop）", { sessionId: sid, text: { type: "string", minLength: 1, maxLength: 20000 }, mode: { type: "string", enum: ["followup", "steer"] }, clientRequestId: { type: "string" } }, ["sessionId", "text"], "chat"),
   l1("chat.follow", "跟随回复", "长轮询会话状态（version 游标），流式文本在 live 字段", { sessionId: sid, version: { type: "integer" }, waitMs: { type: "integer", minimum: 0, maximum: 20000 } }, ["sessionId"], "chat", true),
   l1("chat.cancel", "停止回复", "取消当前回合", { sessionId: sid }, ["sessionId"], "chat"),
+  l1("chat.answerAsk", "回答提问", "回答 ask_user_question（选项/自定义文本）", {
+    sessionId: sid,
+    callId: { type: "string", minLength: 1 },
+    answers: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        required: ["id", "selected"],
+        properties: {
+          id: { type: "string" },
+          selected: { type: "array", items: { type: "string" } },
+          custom: { type: "string" },
+        },
+      },
+    },
+  }, ["sessionId", "callId", "answers"], "chat"),
   l1("models.list", "模型目录", "可用模型与当前选择", { sessionId: sid }, [], "config"),
   l1("models.select", "切换模型", "为会话选择模型", { sessionId: sid, provider: { type: "string" }, model: { type: "string" }, reasoningEffort: { type: "string" } }, ["sessionId", "provider", "model"], "config"),
 ];

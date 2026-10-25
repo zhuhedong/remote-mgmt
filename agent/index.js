@@ -5286,7 +5286,7 @@ function postJSON(url, body, agent, timeout = 15e3) {
 }
 
 // src/bridge/types.ts
-var AGENT_CAP_VERSION = 2;
+var AGENT_CAP_VERSION = 3;
 var emptyObjectParams = {
   type: "object",
   properties: {},
@@ -5434,6 +5434,23 @@ var L1_CATALOG = [
   l1("chat.prompt", "\u53D1\u9001\u6D88\u606F", "\u5411\u4F1A\u8BDD\u53D1\u9001\u4E00\u6761\u6D88\u606F\uFF08\u9A71\u52A8 DSH agent loop\uFF09", { sessionId: sid, text: { type: "string", minLength: 1, maxLength: 2e4 }, mode: { type: "string", enum: ["followup", "steer"] }, clientRequestId: { type: "string" } }, ["sessionId", "text"], "chat"),
   l1("chat.follow", "\u8DDF\u968F\u56DE\u590D", "\u957F\u8F6E\u8BE2\u4F1A\u8BDD\u72B6\u6001\uFF08version \u6E38\u6807\uFF09\uFF0C\u6D41\u5F0F\u6587\u672C\u5728 live \u5B57\u6BB5", { sessionId: sid, version: { type: "integer" }, waitMs: { type: "integer", minimum: 0, maximum: 2e4 } }, ["sessionId"], "chat", true),
   l1("chat.cancel", "\u505C\u6B62\u56DE\u590D", "\u53D6\u6D88\u5F53\u524D\u56DE\u5408", { sessionId: sid }, ["sessionId"], "chat"),
+  l1("chat.answerAsk", "\u56DE\u7B54\u63D0\u95EE", "\u56DE\u7B54 ask_user_question\uFF08\u9009\u9879/\u81EA\u5B9A\u4E49\u6587\u672C\uFF09", {
+    sessionId: sid,
+    callId: { type: "string", minLength: 1 },
+    answers: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        required: ["id", "selected"],
+        properties: {
+          id: { type: "string" },
+          selected: { type: "array", items: { type: "string" } },
+          custom: { type: "string" }
+        }
+      }
+    }
+  }, ["sessionId", "callId", "answers"], "chat"),
   l1("models.list", "\u6A21\u578B\u76EE\u5F55", "\u53EF\u7528\u6A21\u578B\u4E0E\u5F53\u524D\u9009\u62E9", { sessionId: sid }, [], "config"),
   l1("models.select", "\u5207\u6362\u6A21\u578B", "\u4E3A\u4F1A\u8BDD\u9009\u62E9\u6A21\u578B", { sessionId: sid, provider: { type: "string" }, model: { type: "string" }, reasoningEffort: { type: "string" } }, ["sessionId", "provider", "model"], "config")
 ];
@@ -5484,6 +5501,39 @@ function basename(p) {
   return i >= 0 ? s.slice(i + 1) : s;
 }
 var MAX_MESSAGES = 80;
+function parseAskArguments(callId, raw) {
+  let args = raw;
+  if (typeof args === "string") {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      return void 0;
+    }
+  }
+  if (!args || typeof args !== "object") return void 0;
+  const list = Array.isArray(args.questions) ? args.questions : null;
+  if (!list || list.length === 0) return void 0;
+  const questions = [];
+  for (const q of list) {
+    if (!q || typeof q !== "object") continue;
+    const id = typeof q.id === "string" ? q.id : "";
+    const question = typeof q.question === "string" ? q.question : "";
+    if (!id || !question) continue;
+    const options = Array.isArray(q.options) ? q.options.map((o) => ({
+      label: String(o?.label ?? ""),
+      ...typeof o?.description === "string" ? { description: o.description } : {}
+    })).filter((o) => o.label) : void 0;
+    questions.push({
+      id,
+      question,
+      ...typeof q.header === "string" ? { header: q.header } : {},
+      ...options && options.length ? { options } : {},
+      ...q.multi_select === true || q.multiSelect === true ? { multiSelect: true } : {}
+    });
+  }
+  if (!questions.length) return void 0;
+  return { callId: callId || "unknown", questions };
+}
 function applyEvent(msgs, ev) {
   if (!ev || typeof ev.type !== "string") return false;
   if (ev.ignorable === true) return false;
@@ -5507,7 +5557,19 @@ function applyEvent(msgs, ev) {
     case "developer/message":
       return false;
     case "tool/call": {
-      msgs.push({ seq, role: "step", text: String(d.name || "tool"), name: String(d.name || "tool"), status: "running", callId: d.callId, time });
+      const name2 = String(d.name || "tool");
+      const callId = typeof d.callId === "string" ? d.callId : void 0;
+      const ask = name2 === "ask_user_question" || name2 === "request_user_input" ? parseAskArguments(callId || `seq-${seq}`, d.arguments ?? d.input ?? d.params) : void 0;
+      msgs.push({
+        seq,
+        role: "step",
+        text: ask ? ask.questions[0]?.header || ask.questions[0]?.question || name2 : name2,
+        name: name2,
+        status: "running",
+        callId,
+        time,
+        ...ask ? { ask } : {}
+      });
       return true;
     }
     case "tool/result": {
@@ -5535,7 +5597,7 @@ var Follower = class {
   constructor(ctl, sessionId, onClose) {
     this.ctl = ctl;
     this.onClose = onClose;
-    this.state = { sessionId, version: 0, cursor: -1, messages: [], live: "", running: false, error: null };
+    this.state = { sessionId, version: 0, cursor: -1, messages: [], live: "", running: false, error: null, pendingAsk: null };
     void this.run();
   }
   state;
@@ -5583,6 +5645,7 @@ var Follower = class {
           const active2 = f.assistantStream && f.assistantStream.activeAttempt;
           this.state.live = active2 ? active2.stream?.text ?? "" : "";
           this.state.running = Boolean(active2);
+          this.syncPendingAskFromMessages();
           this.bump();
         } else if (f.type === "event") {
           const ev = f.event;
@@ -5594,6 +5657,7 @@ var Follower = class {
             this.state.running = false;
             this.state.live = "";
           }
+          if (ev?.type === "tool/call" || ev?.type === "tool/result") this.syncPendingAskFromMessages();
           this.bump();
         } else if (f.type === "assistant-stream") {
           const fr = f.frame || {};
@@ -5615,6 +5679,33 @@ var Follower = class {
       this.closed = true;
       this.onClose();
     }
+  }
+  setPendingAsk(ask) {
+    const prev = this.state.pendingAsk?.callId;
+    const next = ask?.callId;
+    if (prev === next && ask == null === (this.state.pendingAsk == null)) return;
+    this.state.pendingAsk = ask;
+    this.bump();
+  }
+  clearPendingAsk(callId) {
+    if (!this.state.pendingAsk) return;
+    if (callId && this.state.pendingAsk.callId !== callId) return;
+    this.state.pendingAsk = null;
+    this.bump();
+  }
+  /** Refresh pendingAsk from the latest running ask_user_question step. */
+  syncPendingAskFromMessages() {
+    let found;
+    for (let i = this.state.messages.length - 1; i >= 0; i--) {
+      const m = this.state.messages[i];
+      if (m.role === "step" && m.status === "running" && m.ask) {
+        found = m.ask;
+        break;
+      }
+    }
+    const cur = this.state.pendingAsk;
+    if ((found?.callId || null) === (cur?.callId || null) && Boolean(found) === Boolean(cur)) return;
+    this.state.pendingAsk = found ?? null;
   }
   close() {
     this.abort.abort();
@@ -5797,7 +5888,153 @@ var ChatBridge = class {
     const r = unwrap(await this.ctl().selectModel(req));
     return { selection: r ?? { provider, model } };
   }
+  parks = /* @__PURE__ */ new Map();
+  /**
+   * Host waterfall handler: race Desktop Web UI (next) with a remote park so the
+   * phone can answer ask_user_question. First successful answer wins.
+   */
+  raceUserQuestion(request, next) {
+    const callId = typeof request?.wait?.callId === "string" && request.wait.callId ? request.wait.callId : randomUUID();
+    const questions = Array.isArray(request?.questions) ? request.questions : [];
+    const park = this.parkAsk(callId, questions, request?.signal);
+    let desktop;
+    try {
+      desktop = Promise.resolve(next());
+    } catch (e) {
+      return park;
+    }
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const win = (value, from) => {
+        if (done) return;
+        done = true;
+        if (from === "desktop") this.dropPark(callId);
+        resolve(value);
+      };
+      park.then((v) => win(v, "remote"), (err) => {
+        if (done) return;
+        if (err && err.code === "SUPERSEDED") return;
+        desktop.then((v) => win(v, "desktop"), reject);
+      });
+      desktop.then((v) => win(v, "desktop"), (_err) => {
+        if (done) return;
+        park.then((v) => win(v, "remote"), reject);
+      });
+    });
+  }
+  parkAsk(callId, questions, signal) {
+    this.dropPark(callId);
+    const ask = {
+      callId,
+      questions: questions.map((q) => ({
+        id: String(q.id),
+        question: String(q.question ?? ""),
+        ...typeof q.header === "string" ? { header: q.header } : {},
+        ...Array.isArray(q.options) ? {
+          options: q.options.map((o) => ({
+            label: String(o?.label ?? ""),
+            ...typeof o?.description === "string" ? { description: o.description } : {}
+          })).filter((o) => o.label)
+        } : {},
+        ...q.multiSelect === true || q.multi_select === true ? { multiSelect: true } : {}
+      }))
+    };
+    for (const f of this.followers.values()) {
+      if (!f.closed) f.setPendingAsk(ask);
+    }
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        signal?.removeEventListener?.("abort", onAbort);
+        this.parks.delete(callId);
+      };
+      const onAbort = () => {
+        cleanup();
+        for (const f of this.followers.values()) f.clearPendingAsk(callId);
+        reject(Object.assign(new Error("ask aborted"), { code: "ABORTED" }));
+      };
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener?.("abort", onAbort);
+      this.parks.set(callId, {
+        callId,
+        questions: ask.questions,
+        resolve: (v) => {
+          cleanup();
+          for (const f of this.followers.values()) f.clearPendingAsk(callId);
+          resolve(v);
+        },
+        reject: (e) => {
+          cleanup();
+          for (const f of this.followers.values()) f.clearPendingAsk(callId);
+          reject(e);
+        },
+        cleanup
+      });
+    });
+  }
+  dropPark(callId) {
+    if (!callId) return;
+    const p = this.parks.get(callId);
+    if (!p) return;
+    try {
+      p.reject(Object.assign(new Error("superseded"), { code: "SUPERSEDED" }));
+    } catch {
+    }
+    p.cleanup();
+    this.parks.delete(callId);
+    for (const f of this.followers.values()) f.clearPendingAsk(callId);
+  }
+  /** App submits answers for a parked ask_user_question. */
+  async answerAsk(params) {
+    const callId = typeof params.callId === "string" ? params.callId : "";
+    if (!callId) fail("VALIDATION", "callId required");
+    const raw = params.answers;
+    if (!Array.isArray(raw) || raw.length === 0) fail("VALIDATION", "answers required");
+    const answers = [];
+    for (const a of raw) {
+      if (!a || typeof a !== "object") continue;
+      const id = typeof a.id === "string" ? a.id : "";
+      const selected = Array.isArray(a.selected) ? a.selected.filter((x) => typeof x === "string") : [];
+      if (!id) continue;
+      const item = { id, selected };
+      if (typeof a.custom === "string" && a.custom.trim()) item.custom = String(a.custom);
+      answers.push(item);
+    }
+    if (!answers.length) fail("VALIDATION", "answers required");
+    const park = this.parks.get(callId);
+    if (park) {
+      park.resolve({ answers });
+      return { ok: true, callId, via: "waterfall" };
+    }
+    const uq = this.userQuestions?.();
+    const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+    if (uq && typeof uq.answer === "function" && sessionId) {
+      try {
+        const agent = typeof uq.agentOf === "function" ? uq.agentOf(sessionId) : sessionId;
+        unwrap(await uq.answer(agent, callId, { answers }));
+        for (const f of this.followers.values()) f.clearPendingAsk(callId);
+        return { ok: true, callId, via: "continued" };
+      } catch (e) {
+        fail(e?.code || "DSH_ERROR", e?.message || "userQuestions.answer failed");
+      }
+    }
+    fail("NOT_FOUND", "\u6CA1\u6709\u7B49\u5F85\u4E2D\u7684\u63D0\u95EE\uFF08callId \u65E0\u6548\u6216\u5DF2\u7ED3\u675F\uFF09");
+  }
+  userQuestions = null;
+  /** Optional: wire ctx.userQuestions for continued (timed) answers. */
+  setUserQuestions(getter) {
+    this.userQuestions = getter;
+  }
   dispose() {
+    for (const p of this.parks.values()) {
+      try {
+        p.reject(Object.assign(new Error("disposed"), { code: "ABORTED" }));
+      } catch {
+      }
+    }
+    this.parks.clear();
     for (const f of this.followers.values()) f.close();
     this.followers.clear();
     if (this.sweeper) {
@@ -6107,6 +6344,8 @@ var BridgeRouter = class {
         return this.deps.chat.follow(params);
       case "chat.cancel":
         return this.deps.chat.cancel(params);
+      case "chat.answerAsk":
+        return this.deps.chat.answerAsk(params);
       case "models.list":
         return this.deps.chat.modelsList(params);
       case "models.select":
@@ -6694,7 +6933,7 @@ var Config = Schema ? buildConfig(Schema) : void 0;
 // src/index.ts
 var name = "dsh-remote-agent";
 var PREFIX = "/dsh-remote-agent";
-var VERSION = "0.2.1";
+var VERSION = "0.2.3";
 var LEGACY_HOSTS = ["dsh.cli-help.com"];
 var here = () => {
   try {
@@ -7007,6 +7246,30 @@ function apply(ctx, rawConfig) {
       });
     } catch (e) {
       log.warn(`A1 sessionController \u4E0D\u53EF\u7528: ${e.message}`);
+    }
+    try {
+      ctx.inject(["userQuestions"], (c) => {
+        const run2 = () => {
+          const uq = c.userQuestions || null;
+          chat.setUserQuestions(() => uq);
+          if (uq) log.info("A1: userQuestions \u5DF2\u63A5\u5165\uFF08\u652F\u6301\u8D85\u65F6\u540E\u8865\u7B54\uFF09");
+          return () => {
+            chat.setUserQuestions(() => null);
+          };
+        };
+        if (typeof c.effect === "function") c.effect(run2);
+        else run2();
+      });
+    } catch (e) {
+      log.warn(`userQuestions \u4E0D\u53EF\u7528: ${e.message}`);
+    }
+    try {
+      if (typeof ctx.on === "function") {
+        ctx.on("user-questions/request", (request, next) => chat.raceUserQuestion(request, next));
+        log.info("A1: \u5DF2\u6CE8\u518C user-questions/request\uFF08\u624B\u673A\u53EF\u7B54 ask_user_question\uFF09");
+      }
+    } catch (e) {
+      log.warn(`\u6CE8\u518C user-questions/request \u5931\u8D25: ${e.message}`);
     }
     try {
       ctx.inject(["connection", "webServer"], (c) => {

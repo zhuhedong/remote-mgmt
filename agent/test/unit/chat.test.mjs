@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BridgeRouter, ChatBridge, applyEvent, unwrap, resolveSessionCwd, textOf, chunkText } from "../.build/bridge/index.js";
+import { BridgeRouter, ChatBridge, applyEvent, parseAskArguments, unwrap, resolveSessionCwd, textOf, chunkText } from "../.build/bridge/index.js";
 
 function fakeController() {
   const calls = [];
@@ -156,4 +156,22 @@ test("resolveSessionCwd expands ~ and resolves relative", () => {
   assert.equal(textOf([{ type: "thinking", text: "x" }, { type: "text", text: "y" }]), "y");
   assert.equal(chunkText({ chunk: { type: "reasoning-delta", text: "z" } }), "");
   assert.equal(chunkText({ chunk: { type: "text-delta", text: "ok" } }), "ok");
+});
+
+test("parseAskArguments and applyEvent ask step", () => {
+  const ask = parseAskArguments("c1", {
+    questions: [
+      { id: "q1", question: "选哪个？", header: "确认", options: [{ label: "A", description: "甲" }, { label: "B" }], multi_select: false },
+    ],
+  });
+  assert.equal(ask.callId, "c1");
+  assert.equal(ask.questions[0].options.length, 2);
+  assert.equal(ask.questions[0].header, "确认");
+  const msgs = [];
+  applyEvent(msgs, { type: "tool/call", seq: 1, data: { callId: "c1", name: "ask_user_question", arguments: { questions: [{ id: "q1", question: "选哪个？", options: [{ label: "A" }] }] } } });
+  assert.equal(msgs[0].name, "ask_user_question");
+  assert.ok(msgs[0].ask);
+  assert.equal(msgs[0].ask.questions[0].id, "q1");
+  applyEvent(msgs, { type: "tool/result", seq: 2, data: { callId: "c1" } });
+  assert.equal(msgs[0].status, "done");
 });

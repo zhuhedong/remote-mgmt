@@ -86,6 +86,7 @@ export class BridgeRouter {
       case "chat.prompt": return this.deps.chat!.prompt(params);
       case "chat.follow": return this.deps.chat!.follow(params);
       case "chat.cancel": return this.deps.chat!.cancel(params);
+      case "chat.answerAsk": return this.deps.chat!.answerAsk(params);
       case "models.list": return this.deps.chat!.modelsList(params);
       case "models.select": return this.deps.chat!.modelsSelect(params);
       default:

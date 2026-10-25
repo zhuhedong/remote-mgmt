@@ -7,6 +7,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
+import cn.zhuhedong.remote.data.AskPayload
 import cn.zhuhedong.remote.data.ChatMsg
 
 /** Minimal markdown blocks: headings, bullets, numbered, code fences, paragraphs. */
@@ -61,27 +62,42 @@ fun inlineMd(s: String, codeBg: Color = Color(0xFFF1F2F4)): AnnotatedString = bu
     }
 }
 
-/** Chat render items: consecutive tool steps collapse into one card. */
+/** Chat render items: consecutive tool steps collapse into one card; asks become native cards. */
 sealed class ChatItem {
     data class User(val msg: ChatMsg) : ChatItem()
     data class Assistant(val text: String, val live: Boolean = false) : ChatItem()
     data class Steps(val steps: List<ChatMsg>) : ChatItem() {
         val running: Boolean get() = steps.any { it.status == "running" }
     }
+    data class Ask(val ask: AskPayload, val answered: Boolean) : ChatItem()
 }
 
-fun groupChat(msgs: List<ChatMsg>, live: String): List<ChatItem> {
+fun groupChat(msgs: List<ChatMsg>, live: String, pendingAsk: AskPayload? = null): List<ChatItem> {
     val out = ArrayList<ChatItem>()
     val buf = ArrayList<ChatMsg>()
+    val seenAsk = HashSet<String>()
     fun flush() { if (buf.isNotEmpty()) { out.add(ChatItem.Steps(buf.toList())); buf.clear() } }
     for (m in msgs) {
         when (m.role) {
-            "step" -> buf.add(m)
+            "step" -> {
+                val ask = m.ask
+                if (ask != null) {
+                    flush()
+                    seenAsk.add(ask.callId)
+                    out.add(ChatItem.Ask(ask, answered = m.status != "running"))
+                } else {
+                    buf.add(m)
+                }
+            }
             "user" -> { flush(); out.add(ChatItem.User(m)) }
             else -> { flush(); if (m.text.isNotBlank()) out.add(ChatItem.Assistant(m.text)) }
         }
     }
     flush()
+    // Waterfall park may surface before tool/call args arrive (or when args were dropped).
+    if (pendingAsk != null && pendingAsk.callId !in seenAsk) {
+        out.add(ChatItem.Ask(pendingAsk, answered = false))
+    }
     if (live.isNotBlank()) out.add(ChatItem.Assistant(live, live = true))
     return out
 }

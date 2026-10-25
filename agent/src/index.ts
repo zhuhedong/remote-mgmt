@@ -19,7 +19,7 @@ import { Config as ConfigSchema } from "./schema.js";
 export const name = "dsh-remote-agent";
 export { Config } from "./schema.js";
 export const PREFIX = "/dsh-remote-agent";
-export const VERSION = "0.2.1";
+export const VERSION = "0.2.3";
 const LEGACY_HOSTS = ["dsh.cli-help.com"]; // adopted from dsh-cloudflare-tunnel (decision D8)
 
 const here = () => { try { return dirname(fileURLToPath(import.meta.url)); } catch { return process.cwd(); } };
@@ -225,6 +225,25 @@ export function apply(ctx: any, rawConfig: any) {
         if (typeof c.effect === "function") c.effect(run); else run();
       });
     } catch (e: any) { log.warn(`A1 sessionController 不可用: ${e.message}`); }
+    try {
+      // Optional: continued (timed) answers after ask timeout.
+      ctx.inject(["userQuestions"], (c: any) => {
+        const run = () => {
+          const uq = c.userQuestions || null;
+          chat.setUserQuestions(() => uq);
+          if (uq) log.info("A1: userQuestions 已接入（支持超时后补答）");
+          return () => { chat.setUserQuestions(() => null); };
+        };
+        if (typeof c.effect === "function") c.effect(run); else run();
+      });
+    } catch (e: any) { log.warn(`userQuestions 不可用: ${e.message}`); }
+    // Host waterfall: park ask_user_question so the Android client can answer.
+    try {
+      if (typeof ctx.on === "function") {
+        ctx.on("user-questions/request", (request: any, next: any) => chat.raceUserQuestion(request, next));
+        log.info("A1: 已注册 user-questions/request（手机可答 ask_user_question）");
+      }
+    } catch (e: any) { log.warn(`注册 user-questions/request 失败: ${e.message}`); }
     try {
       ctx.inject(["connection", "webServer"], (c: any) => {
         const run = () => { connSvc = c.connection; const d = registerControlRoute(PREFIX, c.connection, c.webServer, handler); if (!d) log.warn("无法注册控制路由"); return () => { connSvc = null; if (typeof d === "function") d(); }; };

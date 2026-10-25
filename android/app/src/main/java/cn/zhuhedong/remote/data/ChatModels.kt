@@ -16,11 +16,26 @@ data class ChatSession(
 
 data class ChatSpace(val name: String, val cwd: String, val count: Int)
 
+data class AskOption(val label: String, val description: String? = null)
+
+data class AskQuestion(
+    val id: String,
+    val question: String,
+    val header: String? = null,
+    val options: List<AskOption> = emptyList(),
+    val multiSelect: Boolean = false,
+)
+
+data class AskPayload(val callId: String, val questions: List<AskQuestion>)
+
 data class ChatMsg(
     val seq: Long,
     val role: String, // user | assistant | step
     val text: String,
     val status: String? = null, // running | done | error (steps)
+    val name: String? = null,
+    val callId: String? = null,
+    val ask: AskPayload? = null,
 )
 
 data class ModelOption(val provider: String, val providerName: String, val id: String, val name: String)
@@ -34,6 +49,7 @@ data class FollowSnapshot(
     val live: String,
     val running: Boolean,
     val error: String?,
+    val pendingAsk: AskPayload? = null,
 )
 
 object ChatParse {
@@ -54,8 +70,39 @@ object ChatParse {
         return s to sp
     }
 
+    @Suppress("UNCHECKED_CAST")
+    fun askPayload(v: Any?): AskPayload? {
+        val o = v as? Map<String, Any?> ?: return null
+        val callId = str(o["callId"]) ?: return null
+        val qs = list(o["questions"]).mapNotNull { q ->
+            val id = str(q["id"]) ?: return@mapNotNull null
+            val question = str(q["question"]) ?: return@mapNotNull null
+            val options = list(q["options"]).mapNotNull { opt ->
+                val label = str(opt["label"]) ?: return@mapNotNull null
+                AskOption(label, str(opt["description"]))
+            }
+            AskQuestion(
+                id = id,
+                question = question,
+                header = str(q["header"]),
+                options = options,
+                multiSelect = q["multiSelect"] == true || q["multi_select"] == true,
+            )
+        }
+        if (qs.isEmpty()) return null
+        return AskPayload(callId, qs)
+    }
+
     fun messages(v: Any?): List<ChatMsg> = list(v).map { o ->
-        ChatMsg(num(o["seq"]), str(o["role"]) ?: "assistant", (o["text"] as? String) ?: "", str(o["status"]))
+        ChatMsg(
+            seq = num(o["seq"]),
+            role = str(o["role"]) ?: "assistant",
+            text = (o["text"] as? String) ?: "",
+            status = str(o["status"]),
+            name = str(o["name"]),
+            callId = str(o["callId"]),
+            ask = askPayload(o["ask"]),
+        )
     }
 
     fun follow(data: Map<String, Any?>?): FollowSnapshot = FollowSnapshot(
@@ -65,6 +112,7 @@ object ChatParse {
         live = (data?.get("live") as? String) ?: "",
         running = data?.get("running") == true,
         error = str(data?.get("error")),
+        pendingAsk = askPayload(data?.get("pendingAsk")),
     )
 
     fun models(data: Map<String, Any?>?): Pair<List<ModelOption>, ModelSel?> {

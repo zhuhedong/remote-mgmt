@@ -2,6 +2,7 @@ package cn.zhuhedong.remote.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import cn.zhuhedong.remote.data.AskPayload
 import cn.zhuhedong.remote.data.ChatMsg
 import cn.zhuhedong.remote.data.ChatParse
 import cn.zhuhedong.remote.data.ChatSession
@@ -46,6 +47,9 @@ data class ChatUiState(
     val caps: Set<String> = emptySet(),
     val capsError: FriendlyError? = null,
     val toast: String? = null,
+    /** Active ask_user_question waiting for a tap answer. */
+    val pendingAsk: AskPayload? = null,
+    val answeringAsk: Boolean = false,
     /** Absolute or ~/… path chosen for the next create; kept in UI state so it can't desync from [pendingSpace]. */
     val pendingCwd: String? = null,
     val pendingSpace: String? = null,
@@ -202,7 +206,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
     fun newInSpace(cwd: String) {
         stopFollow()
         val c = cwd.trim().ifBlank { null }
-        set { it.copy(pendingCwd = c, pendingSpace = c, sessionId = null, messages = emptyList(), live = "", running = false, error = null) }
+        set { it.copy(pendingCwd = c, pendingSpace = c, sessionId = null, messages = emptyList(), live = "", running = false, pendingAsk = null, error = null) }
     }
 
     fun updateInput(s: String) = set { it.copy(input = s) }
@@ -252,6 +256,35 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         }
     }
 
+
+    /** Submit answers for a parked ask_user_question (options are option labels). */
+    fun answerAsk(callId: String, answers: List<Pair<String, List<String>>>, customs: Map<String, String> = emptyMap()) {
+        val sid = _ui.value.sessionId ?: return
+        if (_ui.value.answeringAsk) return
+        viewModelScope.launch {
+            set { it.copy(answeringAsk = true, error = null) }
+            val arr = org.json.JSONArray()
+            for ((id, selected) in answers) {
+                val o = JSONObject().put("id", id)
+                val sel = org.json.JSONArray()
+                selected.forEach { sel.put(it) }
+                o.put("selected", sel)
+                customs[id]?.takeIf { it.isNotBlank() }?.let { o.put("custom", it) }
+                arr.put(o)
+            }
+            val r = call(
+                "chat.answerAsk",
+                JSONObject().put("sessionId", sid).put("callId", callId).put("answers", arr),
+            )
+            if (noteAuth(r)) { set { it.copy(answeringAsk = false) }; return@launch }
+            if (r.ok) {
+                set { it.copy(answeringAsk = false, pendingAsk = null, toast = "已提交回答") }
+            } else {
+                set { it.copy(answeringAsk = false, error = errText(r).let { e -> e.copy(title = "提交回答失败") }) }
+            }
+        }
+    }
+
     fun stop() {
         val sid = _ui.value.sessionId ?: return
         viewModelScope.launch {
@@ -294,7 +327,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
         if (device != null && device.id != _ui.value.device?.id) selectDevice(device)
         val c = cwd?.trim()?.ifBlank { null }
         stopFollow()
-        set { it.copy(pendingCwd = c, pendingSpace = c, sessionId = null, messages = emptyList(), live = "", running = false, error = null) }
+        set { it.copy(pendingCwd = c, pendingSpace = c, sessionId = null, messages = emptyList(), live = "", running = false, pendingAsk = null, error = null) }
     }
 
     fun renameSession(id: String, title: String) {
@@ -353,6 +386,7 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
                                 messages = f.messages,
                                 live = f.live,
                                 running = f.running || it.sending,
+                                pendingAsk = f.pendingAsk,
                                 error = f.error?.let { m -> Friendly.of("DSH_ERROR", m) } ?: it.error,
                             )
                         }

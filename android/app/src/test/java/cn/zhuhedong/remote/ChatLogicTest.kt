@@ -84,4 +84,35 @@ class ChatLogicTest {
         assertEquals(1, items.size)
         assertTrue(items[0] is ChatItem.User)
     }
+
+    @Test fun askPayloadAndGroup() {
+        val ask = cn.zhuhedong.remote.data.AskPayload(
+            "c1",
+            listOf(cn.zhuhedong.remote.data.AskQuestion("q1", "选一个", options = listOf(cn.zhuhedong.remote.data.AskOption("A"), cn.zhuhedong.remote.data.AskOption("B")))),
+        )
+        val items = groupChat(listOf(
+            ChatMsg(1, "assistant", "请选择"),
+            ChatMsg(2, "step", "选一个", "running", name = "ask_user_question", callId = "c1", ask = ask),
+        ), "", null)
+        assertEquals(2, items.size)
+        assertTrue(items[1] is ChatItem.Ask)
+        assertEquals(false, (items[1] as ChatItem.Ask).answered)
+
+        val parsed = ChatParse.follow(mapOf(
+            "version" to 1,
+            "pendingAsk" to mapOf(
+                "callId" to "c9",
+                "questions" to listOf(mapOf(
+                    "id" to "q",
+                    "question" to "OK?",
+                    "options" to listOf(mapOf("label" to "是"), mapOf("label" to "否")),
+                )),
+            ),
+            "messages" to emptyList<Any>(),
+        ))
+        assertEquals("c9", parsed.pendingAsk?.callId)
+        assertEquals(2, parsed.pendingAsk?.questions?.get(0)?.options?.size)
+        val fromPending = groupChat(emptyList(), "", parsed.pendingAsk)
+        assertTrue(fromPending[0] is ChatItem.Ask)
+    }
 }
