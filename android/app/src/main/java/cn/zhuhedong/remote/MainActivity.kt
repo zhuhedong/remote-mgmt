@@ -28,6 +28,11 @@ import cn.zhuhedong.remote.ui.workbench.WorkbenchScreen
 import cn.zhuhedong.remote.viewmodel.VmFactory
 
 class MainActivity : ComponentActivity() {
+    override fun onResume() {
+        super.onResume()
+        cn.zhuhedong.remote.update.Updater.onResume(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
@@ -35,9 +40,11 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.auto(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT),
         )
         val app = application as DshRemoteApp
+        cn.zhuhedong.remote.update.Updater.check(this, manual = false)
         setContent {
             DshRemoteTheme {
                 AppNav(app)
+                cn.zhuhedong.remote.update.UpdateHost()
             }
         }
     }

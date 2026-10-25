@@ -392,6 +392,8 @@ internal fun ProfileTab(ui: ChatUiState, username: String?, hubBase: String, onO
         Surface(shape = RoundedCornerShape(16.dp), color = Dsh.c.card, modifier = Modifier.fillMaxWidth().border(1.dp, Dsh.c.border, RoundedCornerShape(16.dp))) {
             Column {
                 SettingRow(Icons.Filled.Info, "App 版本", BuildConfig.VERSION_NAME)
+                val updCtx = androidx.compose.ui.platform.LocalContext.current
+                SettingRow(Icons.Filled.SystemUpdate, "检查更新", "GitHub Release") { cn.zhuhedong.remote.update.Updater.check(updCtx, manual = true) }
                 SettingRow(Icons.Filled.Extension, "当前设备能力", if (ui.caps.isEmpty()) "—" else "${ui.caps.size} 项")
             }
         }
