@@ -5938,6 +5938,12 @@ var ChatBridge = class {
     return { selection: r ?? { provider, model } };
   }
   parks = /* @__PURE__ */ new Map();
+  /**
+   * Live calling agents remembered from user-questions/request.
+   * DSH userQuestions.answer(agent, ...) requires the exact same object as agents.get(id).
+   */
+  liveAgents = /* @__PURE__ */ new Map();
+  agents = null;
   /** Park ask for this session (or all followers if session unknown). */
   surfaceAsk(ask, sessionId) {
     if (sessionId) {
@@ -6021,12 +6027,15 @@ var ChatBridge = class {
   raceUserQuestion(request, next) {
     const knownCallId = extractAskCallId(request);
     const sessionId = extractAskSessionId(request);
+    const liveAgent = request?.agent && typeof request.agent === "object" ? request.agent : null;
+    if (liveAgent && sessionId) this.liveAgents.set(sessionId, liveAgent);
     const questions = Array.isArray(request?.questions) ? request.questions : [];
     const parkKey = knownCallId || `prov-${randomUUID()}`;
     const park = this.parkAsk(parkKey, questions, request?.signal, {
       sessionId,
       provisional: !knownCallId,
-      callId: knownCallId || parkKey
+      callId: knownCallId || parkKey,
+      agent: liveAgent
     });
     const entry = this.parks.get(parkKey);
     let desktop;
@@ -6097,6 +6106,7 @@ var ChatBridge = class {
         callId: meta.callId,
         provisional: meta.provisional,
         sessionId: meta.sessionId,
+        agent: meta.agent ?? null,
         ask,
         questions: ask.questions,
         resolve: (v) => {
@@ -6188,20 +6198,64 @@ var ChatBridge = class {
     const uq = this.userQuestions?.();
     if (uq && typeof uq.answer === "function" && sessionId) {
       try {
-        const agent = typeof uq.agentOf === "function" ? uq.agentOf(sessionId) : sessionId;
-        unwrap(await uq.answer(agent, callId, { answers }));
+        const agent = this.resolveLiveAgent(sessionId);
+        if (!agent) fail("CALLER_NOT_LIVE", "\u6CA1\u6709\u53EF\u7528\u7684 live calling agent\uFF0C\u65E0\u6CD5\u8865\u7B54");
+        const answered = unwrap(await uq.answer(agent, callId, { answers }));
+        if (answered === false) fail("NOT_FOUND", "\u6CA1\u6709\u7B49\u5F85\u4E2D\u7684\u63D0\u95EE\uFF08callId \u65E0\u6548\u6216\u5DF2\u7ED3\u675F\uFF09");
         for (const f of this.followers.values()) f.clearPendingAsk(callId);
         return { ok: true, callId, via: "continued" };
       } catch (e) {
+        if (e?.code) throw e;
         fail(e?.code || "DSH_ERROR", e?.message || "userQuestions.answer failed");
       }
     }
     fail("NOT_FOUND", "\u6CA1\u6709\u7B49\u5F85\u4E2D\u7684\u63D0\u95EE\uFF08callId \u65E0\u6548\u6216\u5DF2\u7ED3\u675F\uFF09");
   }
+  /**
+   * Resolve the exact live calling Agent for continued answers.
+   * Prefer the object captured at ask time; fall back to agents.get(sessionId)
+   * (same lookup Typert uses for Remote @Remote answer).
+   */
+  resolveLiveAgent(sessionId, hint) {
+    const agents = this.agents?.() ?? null;
+    const candidates = [];
+    if (hint && typeof hint === "object") candidates.push(hint);
+    const remembered = this.liveAgents.get(sessionId);
+    if (remembered && remembered !== hint) candidates.push(remembered);
+    if (agents && typeof agents.get === "function") {
+      try {
+        const live = agents.get(sessionId);
+        if (live && typeof live === "object") candidates.push(live);
+      } catch {
+      }
+    }
+    for (const agent of candidates) {
+      if (!agent || typeof agent !== "object") continue;
+      if (agents && typeof agents.get === "function") {
+        try {
+          const id = typeof agent.id === "string" ? agent.id : sessionId;
+          if (agents.get(id) === agent) {
+            if (sessionId) this.liveAgents.set(sessionId, agent);
+            return agent;
+          }
+        } catch {
+          continue;
+        }
+      } else {
+        if (sessionId) this.liveAgents.set(sessionId, agent);
+        return agent;
+      }
+    }
+    return null;
+  }
   userQuestions = null;
   /** Optional: wire ctx.userQuestions for continued (timed) answers. */
   setUserQuestions(getter) {
     this.userQuestions = getter;
+  }
+  /** Optional: wire ctx.agents so continued answers can resolve the live Agent. */
+  setAgents(getter) {
+    this.agents = getter;
   }
   dispose() {
     for (const p of this.parks.values()) {
@@ -6211,6 +6265,7 @@ var ChatBridge = class {
       }
     }
     this.parks.clear();
+    this.liveAgents.clear();
     for (const f of this.followers.values()) f.close();
     this.followers.clear();
     if (this.sweeper) {
@@ -7438,6 +7493,22 @@ function apply(ctx, rawConfig) {
       });
     } catch (e) {
       log.warn(`userQuestions \u4E0D\u53EF\u7528: ${e.message}`);
+    }
+    try {
+      ctx.inject(["agents"], (c) => {
+        const run2 = () => {
+          const agents = c.agents || null;
+          chat.setAgents(() => agents);
+          if (agents) log.info("A1: agents \u5DF2\u63A5\u5165\uFF08\u8865\u7B54\u53EF\u89E3\u6790 live calling agent\uFF09");
+          return () => {
+            chat.setAgents(() => null);
+          };
+        };
+        if (typeof c.effect === "function") c.effect(run2);
+        else run2();
+      });
+    } catch (e) {
+      log.warn(`agents \u4E0D\u53EF\u7528: ${e.message}`);
     }
     try {
       if (typeof ctx.on === "function") {

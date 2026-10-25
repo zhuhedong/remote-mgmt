@@ -214,3 +214,76 @@ test("provisional park rebinds to tool callId and answerAsk resolves", async () 
   chat.dispose();
   await followP.catch(() => {});
 });
+
+
+test("answerAsk continued uses exact live agent not sessionId string", async () => {
+  const live = { id: "s1", session: "s1", steer() {} };
+  const agents = {
+    store: new Map([["s1", live]]),
+    get(id) { return this.store.get(id); },
+    roots() { return [live]; },
+  };
+  const answered = [];
+  const uq = {
+    answer(agent, callId, payload) {
+      answered.push({ agent, callId, payload });
+      // Mirror DSH assertLiveRoot
+      if (agents.get(agent.id) !== agent) {
+        const e = new Error("human interaction requires the exact live calling agent when an agent is supplied");
+        e.code = "CALLER_NOT_LIVE";
+        throw e;
+      }
+      return true;
+    },
+  };
+  const ctl = fakeController();
+  const chat = new ChatBridge(() => ctl);
+  chat.setUserQuestions(() => uq);
+  chat.setAgents(() => agents);
+  // Remember live agent as raceUserQuestion would
+  chat.raceUserQuestion(
+    { questions: [{ id: "q1", question: "选？", options: [{ label: "A" }] }], agent: live, signal: AbortSignal.abort() },
+    () => Promise.reject(Object.assign(new Error("no provider"), { code: "NO_PROVIDER" })),
+  ).catch(() => {});
+  await new Promise((r) => setTimeout(r, 20));
+  // No park left (aborted) — continued path
+  const result = await chat.answerAsk({
+    sessionId: "s1",
+    callId: "c-continued",
+    answers: [{ id: "q1", selected: ["A"] }],
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.via, "continued");
+  assert.equal(answered.length, 1);
+  assert.equal(answered[0].agent, live); // exact same object
+  assert.notEqual(typeof answered[0].agent, "string");
+  chat.dispose();
+});
+
+test("answerAsk continued resolves agent via agents.get when not remembered", async () => {
+  const live = { id: "s2", session: "s2" };
+  const agents = { get(id) { return id === "s2" ? live : undefined; }, roots() { return [live]; } };
+  let got = null;
+  const uq = {
+    answer(agent, callId, payload) {
+      got = agent;
+      if (agents.get(agent.id) !== agent) {
+        const e = new Error("human interaction requires the exact live calling agent when an agent is supplied");
+        e.code = "CALLER_NOT_LIVE";
+        throw e;
+      }
+      return true;
+    },
+  };
+  const chat = new ChatBridge(() => fakeController());
+  chat.setUserQuestions(() => uq);
+  chat.setAgents(() => agents);
+  const result = await chat.answerAsk({
+    sessionId: "s2",
+    callId: "c2",
+    answers: [{ id: "q1", selected: ["B"] }],
+  });
+  assert.equal(result.ok, true);
+  assert.equal(got, live);
+  chat.dispose();
+});

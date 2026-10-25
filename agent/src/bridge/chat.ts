@@ -558,12 +558,21 @@ export class ChatBridge {
     callId: string;
     provisional: boolean;
     sessionId: string | null;
+    /** Exact live Agent object from the ask() request (required by DSH assertLiveRoot). */
+    agent: any | null;
     ask: AskPayload;
     questions: AskQuestion[];
     resolve: (v: { answers: AskAnswerItem[] }) => void;
     reject: (e: unknown) => void;
     cleanup: () => void;
   }>();
+
+  /**
+   * Live calling agents remembered from user-questions/request.
+   * DSH userQuestions.answer(agent, ...) requires the exact same object as agents.get(id).
+   */
+  private liveAgents = new Map<string, any>();
+  private agents: (() => any | null) | null = null;
 
   /** Park ask for this session (or all followers if session unknown). */
   private surfaceAsk(ask: AskPayload, sessionId: string | null) {
@@ -654,12 +663,15 @@ export class ChatBridge {
   raceUserQuestion(request: any, next: () => any): Promise<{ answers: AskAnswerItem[] }> {
     const knownCallId = extractAskCallId(request);
     const sessionId = extractAskSessionId(request);
+    const liveAgent = request?.agent && typeof request.agent === "object" ? request.agent : null;
+    if (liveAgent && sessionId) this.liveAgents.set(sessionId, liveAgent);
     const questions = Array.isArray(request?.questions) ? request.questions : [];
     const parkKey = knownCallId || `prov-${randomUUID()}`;
     const park = this.parkAsk(parkKey, questions, request?.signal, {
       sessionId,
       provisional: !knownCallId,
       callId: knownCallId || parkKey,
+      agent: liveAgent,
     });
     // Hold the entry object so desktop-win can drop it even after rebind renamed the map key.
     const entry = this.parks.get(parkKey);
@@ -697,7 +709,7 @@ export class ChatBridge {
     parkKey: string,
     questions: AskQuestion[],
     signal: AbortSignal | undefined,
-    meta: { sessionId: string | null; provisional: boolean; callId: string },
+    meta: { sessionId: string | null; provisional: boolean; callId: string; agent?: any | null },
   ): Promise<{ answers: AskAnswerItem[] }> {
     this.dropPark(parkKey, meta.callId !== parkKey ? meta.callId : undefined);
     const ask: AskPayload = {
@@ -736,6 +748,7 @@ export class ChatBridge {
         callId: meta.callId,
         provisional: meta.provisional,
         sessionId: meta.sessionId,
+        agent: meta.agent ?? null,
         ask,
         questions: ask.questions,
         resolve: (v: { answers: AskAnswerItem[] }) => {
@@ -818,31 +831,77 @@ export class ChatBridge {
       park.resolve({ answers });
       return { ok: true, callId: park.callId, via: "waterfall" };
     }
-    // No live park: try continued answer via injected userQuestions (timed mode after timeout).
+    // No live park: continued (timed) answer via Host userQuestions.answer(liveAgent, ...).
+    // Desktop Web uses Remote RPC with sessionId (Typert resolves to agents.get); in-process
+    // Host API requires the exact live Agent object — never a sessionId string.
     const uq = this.userQuestions?.();
     if (uq && typeof uq.answer === "function" && sessionId) {
       try {
-        const agent = typeof uq.agentOf === "function" ? uq.agentOf(sessionId) : sessionId;
-        unwrap(await uq.answer(agent, callId, { answers }));
+        const agent = this.resolveLiveAgent(sessionId);
+        if (!agent) fail("CALLER_NOT_LIVE", "没有可用的 live calling agent，无法补答");
+        const answered = unwrap(await uq.answer(agent, callId, { answers }));
+        if (answered === false) fail("NOT_FOUND", "没有等待中的提问（callId 无效或已结束）");
         for (const f of this.followers.values()) f.clearPendingAsk(callId);
         return { ok: true, callId, via: "continued" };
       } catch (e: any) {
+        if (e?.code) throw e;
         fail(e?.code || "DSH_ERROR", e?.message || "userQuestions.answer failed");
       }
     }
     fail("NOT_FOUND", "没有等待中的提问（callId 无效或已结束）");
   }
 
-    private userQuestions: (() => any | null) | null = null;
+  /**
+   * Resolve the exact live calling Agent for continued answers.
+   * Prefer the object captured at ask time; fall back to agents.get(sessionId)
+   * (same lookup Typert uses for Remote @Remote answer).
+   */
+  resolveLiveAgent(sessionId: string, hint?: any | null): any | null {
+    const agents = this.agents?.() ?? null;
+    const candidates: any[] = [];
+    if (hint && typeof hint === "object") candidates.push(hint);
+    const remembered = this.liveAgents.get(sessionId);
+    if (remembered && remembered !== hint) candidates.push(remembered);
+    if (agents && typeof agents.get === "function") {
+      try {
+        const live = agents.get(sessionId);
+        if (live && typeof live === "object") candidates.push(live);
+      } catch {}
+    }
+    for (const agent of candidates) {
+      if (!agent || typeof agent !== "object") continue;
+      // Exact live check mirrors DSH assertLiveRoot when agents is available.
+      if (agents && typeof agents.get === "function") {
+        try {
+          const id = typeof agent.id === "string" ? agent.id : sessionId;
+          if (agents.get(id) === agent) {
+            if (sessionId) this.liveAgents.set(sessionId, agent);
+            return agent;
+          }
+        } catch { continue; }
+      } else {
+        // No agents registry in tests — return remembered object as-is.
+        if (sessionId) this.liveAgents.set(sessionId, agent);
+        return agent;
+      }
+    }
+    return null;
+  }
+
+  private userQuestions: (() => any | null) | null = null;
 
   /** Optional: wire ctx.userQuestions for continued (timed) answers. */
   setUserQuestions(getter: () => any | null) { this.userQuestions = getter; }
+
+  /** Optional: wire ctx.agents so continued answers can resolve the live Agent. */
+  setAgents(getter: () => any | null) { this.agents = getter; }
 
   dispose() {
     for (const p of this.parks.values()) {
       try { p.reject(Object.assign(new Error("disposed"), { code: "ABORTED" })); } catch {}
     }
     this.parks.clear();
+    this.liveAgents.clear();
     for (const f of this.followers.values()) f.close();
     this.followers.clear();
     if (this.sweeper) { clearInterval(this.sweeper); this.sweeper = null; }

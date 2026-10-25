@@ -237,6 +237,18 @@ export function apply(ctx: any, rawConfig: any) {
         if (typeof c.effect === "function") c.effect(run); else run();
       });
     } catch (e: any) { log.warn(`userQuestions 不可用: ${e.message}`); }
+    try {
+      // Live Agent registry — continued answers need agents.get(sessionId), not a sessionId string.
+      ctx.inject(["agents"], (c: any) => {
+        const run = () => {
+          const agents = c.agents || null;
+          chat.setAgents(() => agents);
+          if (agents) log.info("A1: agents 已接入（补答可解析 live calling agent）");
+          return () => { chat.setAgents(() => null); };
+        };
+        if (typeof c.effect === "function") c.effect(run); else run();
+      });
+    } catch (e: any) { log.warn(`agents 不可用: ${e.message}`); }
     // Host waterfall: park ask_user_question so the Android client can answer.
     try {
       if (typeof ctx.on === "function") {
