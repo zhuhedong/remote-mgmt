@@ -243,7 +243,10 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
 
     fun openSession(id: String) {
         stopFollow()
-        set { it.copy(sessionId = id, messages = emptyList(), older = emptyList(), loadingOlder = false, hasMoreOlder = true, live = "", running = false, error = null, pendingCwd = null, pendingSpace = null) }
+        // Re-opening the current session (刷新) keeps the transcript on screen — wiping it
+        // made the list blank then refill, which flashed.
+        if (_ui.value.sessionId == id) set { it.copy(error = null, loadingOlder = false) }
+        else set { it.copy(sessionId = id, messages = emptyList(), older = emptyList(), loadingOlder = false, hasMoreOlder = true, live = "", running = false, error = null, pendingCwd = null, pendingSpace = null) }
         startFollow(id)
         loadModels()
     }

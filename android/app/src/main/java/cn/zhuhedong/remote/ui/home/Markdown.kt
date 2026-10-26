@@ -327,13 +327,13 @@ private fun nextSpecial(s: String, from: Int): Int {
 /** Chat render items: consecutive tool steps collapse into one card; asks become native cards. */
 sealed class ChatItem {
     data class User(val msg: ChatMsg) : ChatItem()
-    data class Assistant(val text: String, val live: Boolean = false) : ChatItem()
+    data class Assistant(val text: String, val live: Boolean = false, val seq: Long = 0) : ChatItem()
     data class Steps(val steps: List<ChatMsg>) : ChatItem() {
         val running: Boolean get() = steps.any { it.status == "running" }
     }
     data class Ask(val ask: AskPayload, val answered: Boolean) : ChatItem()
     /** render_ui tool card (spec JSON from agent >= 0.2.7). */
-    data class Ui(val json: String) : ChatItem()
+    data class Ui(val json: String, val seq: Long = 0) : ChatItem()
 }
 
 fun groupChat(msgs: List<ChatMsg>, live: String, pendingAsk: AskPayload? = null): List<ChatItem> {
@@ -353,13 +353,13 @@ fun groupChat(msgs: List<ChatMsg>, live: String, pendingAsk: AskPayload? = null)
                     out.add(ChatItem.Ask(liveAsk ?: ask, answered = !interactive))
                 } else if (!m.ui.isNullOrBlank()) {
                     flush()
-                    out.add(ChatItem.Ui(m.ui))
+                    out.add(ChatItem.Ui(m.ui, m.seq))
                 } else {
                     buf.add(m)
                 }
             }
             "user" -> { flush(); out.add(ChatItem.User(m)) }
-            else -> { flush(); if (m.text.isNotBlank()) out.add(ChatItem.Assistant(m.text)) }
+            else -> { flush(); if (m.text.isNotBlank()) out.add(ChatItem.Assistant(m.text, seq = m.seq)) }
         }
     }
     flush()
@@ -368,4 +368,19 @@ fun groupChat(msgs: List<ChatMsg>, live: String, pendingAsk: AskPayload? = null)
     }
     if (live.isNotBlank()) out.add(ChatItem.Assistant(live, live = true))
     return out
+}
+
+/** Base identity of a chat row, independent of position (so prepending pages keeps keys). */
+fun chatItemBaseKey(item: ChatItem): String = when (item) {
+    is ChatItem.User -> "u${item.msg.seq}"
+    is ChatItem.Assistant -> if (item.live) "live" else "m${item.seq}"
+    is ChatItem.Steps -> item.steps.firstOrNull().let { "s${it?.seq}:${it?.callId}" }
+    is ChatItem.Ask -> "a${item.ask.callId}"
+    is ChatItem.Ui -> "g${item.seq}"
+}
+
+/** Stable, unique LazyColumn keys; collisions get an occurrence suffix. */
+fun chatItemKeys(items: List<ChatItem>): List<String> {
+    val seen = HashMap<String, Int>()
+    return items.map { val b = chatItemBaseKey(it); val n = seen.merge(b, 1, Int::plus)!!; if (n == 1) b else "$b#$n" }
 }

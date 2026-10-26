@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -347,48 +348,58 @@ private fun ChatPane(vm: ChatViewModel, ui: ChatUiState, onMenu: () -> Unit, onN
         ui.error?.let { e -> ErrorBanner(e, onDismiss = vm::clearError, onAction = { vm.clearError(); vm.retry() }) }
         ui.toast?.let { Text(it, color = Muted, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
         val chatItems = remember(ui.messages, ui.live, ui.pendingAsk) { groupChat(ui.messages, ui.live, ui.pendingAsk) }
+        val chatKeys = remember(chatItems) { chatItemKeys(chatItems) }
         val listState = rememberLazyListState()
-        // Index 0 is the header (加载中 / spacer), chat items start at 1.
-        val prev = remember(ui.sessionId) { mutableStateOf<Pair<Int, ChatItem?>>(0 to null) }
-        LaunchedEffect(chatItems, ui.live.length) {
-            if (chatItems.isEmpty()) { prev.value = 0 to null; return@LaunchedEffect }
-            val (oldSize, oldFirst) = prev.value
-            prev.value = chatItems.size to chatItems.first()
-            kotlinx.coroutines.yield()
-            val info = listState.layoutInfo
-            val total = info.totalItemsCount
-            if (total <= 0) return@LaunchedEffect
-            if (oldSize == 0) { runCatching { listState.scrollToItem(total - 1) }; return@LaunchedEffect }
-            val grewTop = oldFirst != null && chatItems.first() != oldFirst && chatItems.size > oldSize &&
-                chatItems.indexOf(oldFirst).let { it > 0 }
-            if (grewTop) {
-                // Prepended an older page: keep the viewport on the same message.
-                val delta = chatItems.indexOf(oldFirst)
-                runCatching { listState.scrollToItem((listState.firstVisibleItemIndex + delta).coerceAtMost(total - 1), listState.firstVisibleItemScrollOffset) }
+        // Hidden until the first jump-to-bottom lands, so opening a session doesn't flash
+        // the top of the transcript for a frame.
+        var positioned by remember(ui.sessionId) { mutableStateOf(false) }
+        val prevSize = remember(ui.sessionId) { mutableStateOf(0) }
+        val prevLastKey = remember(ui.sessionId) { mutableStateOf<String?>(null) }
+        LaunchedEffect(chatKeys, ui.live.length) {
+            if (chatItems.isEmpty()) { prevSize.value = 0; prevLastKey.value = null; positioned = false; return@LaunchedEffect }
+            val oldSize = prevSize.value
+            val oldLast = prevLastKey.value
+            prevSize.value = chatKeys.size
+            prevLastKey.value = chatKeys.last()
+            val lastIndex = chatKeys.size // chat items start at index 1 (after the top spacer)
+            if (oldSize == 0 || !positioned) {
+                runCatching { listState.scrollToItem(lastIndex, Int.MAX_VALUE / 2) }
+                positioned = true
                 return@LaunchedEffect
             }
+            // Prepending older pages: keyed items let LazyColumn keep the viewport anchored
+            // itself — no manual scroll (that used to jump then snap back = 闪屏).
+            val tailChanged = chatKeys.last() != oldLast || ui.live.isNotEmpty()
+            if (!tailChanged) return@LaunchedEffect
+            val info = listState.layoutInfo
             val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0
-            if (lastVisible >= total - 4) runCatching { listState.animateScrollToItem(total - 1) }
+            if (lastVisible >= info.totalItemsCount - 4) runCatching { listState.scrollToItem(info.totalItemsCount - 1, Int.MAX_VALUE / 2) }
         }
-        val nearTop by remember { derivedStateOf { listState.firstVisibleItemIndex <= 1 } }
-        LaunchedEffect(nearTop, ui.sessionId, ui.hasMoreOlder, ui.loadingOlder, chatItems.size) {
-            if (nearTop && chatItems.isNotEmpty() && ui.hasMoreOlder && !ui.loadingOlder) vm.loadOlder()
+        val nearTop by remember { derivedStateOf { listState.firstVisibleItemIndex <= 2 } }
+        LaunchedEffect(nearTop, ui.sessionId, ui.hasMoreOlder, ui.loadingOlder, chatItems.size, positioned) {
+            if (positioned && nearTop && chatItems.isNotEmpty() && ui.hasMoreOlder && !ui.loadingOlder) vm.loadOlder()
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (chatItems.isEmpty()) ChatEmpty(ui, vm, Modifier.align(Alignment.Center))
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                item {
-                    if (ui.loadingOlder) Box(Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) { InProgress("加载中") }
-                    else if (!ui.hasMoreOlder && chatItems.isNotEmpty()) Text("没有更早的消息了", color = Muted, fontSize = 12.sp, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                    else Spacer(Modifier.height(4.dp))
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp).graphicsLayer { alpha = if (positioned || chatItems.isEmpty()) 1f else 0f }, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // Fixed-height header; the 加载中 indicator is an overlay so loading never
+                // inserts/removes rows above the anchor.
+                item(key = "__top", contentType = "top") {
+                    Box(Modifier.fillMaxWidth().height(28.dp), contentAlignment = Alignment.Center) {
+                        if (!ui.hasMoreOlder && !ui.loadingOlder && chatItems.isNotEmpty()) Text("没有更早的消息了", color = Muted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    }
                 }
-                items(chatItems) {
+                items(chatItems.size, key = { chatKeys[it] }, contentType = { chatItems[it]::class.simpleName }) { i ->
+                    val it = chatItems[i]
                     cn.zhuhedong.remote.ui.genui.ProvideGenUiAction({ a, payload -> vm.send(cn.zhuhedong.remote.ui.genui.genUiActionMessage(a, payload)) }) {
                         ChatItemView(it, ui.running, ui.answeringAsk) { callId, answers, customs -> vm.answerAsk(callId, answers, customs) }
                     }
                 }
-                if (ui.running && ui.live.isBlank() && chatItems.lastOrNull() !is ChatItem.Steps && chatItems.none { it is ChatItem.Ask && !it.answered }) item { InProgress("进行中") }
-                item { Spacer(Modifier.height(8.dp)) }
+                if (ui.running && ui.live.isBlank() && chatItems.lastOrNull() !is ChatItem.Steps && chatItems.none { it is ChatItem.Ask && !it.answered }) item(key = "__progress") { InProgress("进行中") }
+                item(key = "__bottom") { Spacer(Modifier.height(8.dp)) }
+            }
+            if (ui.loadingOlder) Surface(shape = RoundedCornerShape(16.dp), color = Dsh.c.card, shadowElevation = 2.dp, modifier = Modifier.align(Alignment.TopCenter).padding(top = 6.dp)) {
+                Box(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) { InProgress("加载中") }
             }
         }
         Composer(vm, ui, onNew = onNew)
