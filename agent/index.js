@@ -5616,7 +5616,8 @@ function applyEvent(msgs, ev) {
         status: "running",
         callId,
         time,
-        ...ask ? { ask } : {}
+        ...ask ? { ask } : {},
+        ...name2 === "render_ui" ? renderUiSpec(d.arguments ?? d.input ?? d.params) : {}
       });
       return true;
     }
@@ -6301,6 +6302,19 @@ function reqSession(params) {
   const s = params.sessionId;
   if (typeof s !== "string" || !s || s.length > 200) fail("VALIDATION", "sessionId required");
   return s;
+}
+function renderUiSpec(args) {
+  try {
+    let a = typeof args === "string" ? JSON.parse(args) : args;
+    if (!a || typeof a !== "object") return {};
+    let spec = a.spec ?? a.ui ?? a;
+    if (typeof spec === "string") spec = JSON.parse(spec);
+    if (!spec || typeof spec !== "object") return {};
+    const json2 = JSON.stringify(spec);
+    return json2.length > 2e5 ? {} : { ui: json2 };
+  } catch {
+    return {};
+  }
 }
 
 // src/bridge/logs.ts

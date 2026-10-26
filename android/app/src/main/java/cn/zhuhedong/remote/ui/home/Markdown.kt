@@ -23,12 +23,14 @@ sealed class MdBlock {
     data class Quote(val text: String) : MdBlock()
     data class Table(val headers: List<String>, val rows: List<List<String>>) : MdBlock()
     data object Hr : MdBlock()
+    /** ```dsh-ui fence (GenUI spec JSON). [closed]=false while still streaming. */
+    data class GenUi(val json: String, val closed: Boolean) : MdBlock()
 }
 
 private val ORDERED = Regex("^(\\d+)[.)]\\s+(.*)$")
 private val UNORDERED = Regex("^([-*+])\\s+(.*)$")
 private val HR = Regex("^(-{3,}|\\*{3,}|_{3,})\\s*$")
-private val FENCE = Regex("^```\\s*([^`\\s]*)\\s*$")
+private val FENCE = Regex("^```\\s*([^`]*?)\\s*$")
 private val TABLE_ROW = Regex("^\\|(.+)\\|\\s*$")
 private val TABLE_SEP = Regex("^\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$")
 
@@ -106,7 +108,9 @@ fun parseMarkdown(src: String): List<MdBlock> {
         when {
             fence != null -> {
                 flushPara()
-                val lang = fence.groupValues[1].ifBlank { null }
+                val info = fence.groupValues[1].trim().split(Regex("\\s+"))
+                val lang = info.firstOrNull()?.ifBlank { null }
+                val isUi = info.any { it == "dsh-ui" }
                 val sb = StringBuilder()
                 i++
                 while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
@@ -115,8 +119,10 @@ fun parseMarkdown(src: String): List<MdBlock> {
                     i++
                 }
                 // consume closing fence if present
-                if (i < lines.size && lines[i].trimStart().startsWith("```")) i++
-                out.add(MdBlock.Code(sb.toString(), lang))
+                val closed = i < lines.size && lines[i].trimStart().startsWith("```")
+                if (closed) i++
+                if (isUi) out.add(MdBlock.GenUi(sb.toString(), closed))
+                else out.add(MdBlock.Code(sb.toString(), lang))
                 continue
             }
 
@@ -269,6 +275,15 @@ fun inlineMd(
                 continue
             }
         }
+        // highlight ==x== (dsh-ui inline rich text)
+        if (s.startsWith("==", i)) {
+            val end = s.indexOf("==", i + 2)
+            if (end > i + 2) {
+                withStyle(SpanStyle(background = Color(0x33F5B700))) { append(s.substring(i + 2, end)) }
+                i = end + 2
+                continue
+            }
+        }
         // strike ~~
         if (s.startsWith("~~", i)) {
             val end = s.indexOf("~~", i + 2)
@@ -303,7 +318,7 @@ private fun nextSpecial(s: String, from: Int): Int {
     var j = from
     while (j < s.length) {
         val c = s[j]
-        if (c == '`' || c == '[' || c == '*' || c == '_' || c == '~') return if (j == from) from + 1 else j
+        if (c == '`' || c == '[' || c == '*' || c == '_' || c == '~' || c == '=') return if (j == from) from + 1 else j
         j++
     }
     return s.length
@@ -317,6 +332,8 @@ sealed class ChatItem {
         val running: Boolean get() = steps.any { it.status == "running" }
     }
     data class Ask(val ask: AskPayload, val answered: Boolean) : ChatItem()
+    /** render_ui tool card (spec JSON from agent >= 0.2.7). */
+    data class Ui(val json: String) : ChatItem()
 }
 
 fun groupChat(msgs: List<ChatMsg>, live: String, pendingAsk: AskPayload? = null): List<ChatItem> {
@@ -334,6 +351,9 @@ fun groupChat(msgs: List<ChatMsg>, live: String, pendingAsk: AskPayload? = null)
                     val liveAsk = pendingAsk?.takeIf { it.callId == ask.callId }
                     val interactive = liveAsk != null || m.status == "running"
                     out.add(ChatItem.Ask(liveAsk ?: ask, answered = !interactive))
+                } else if (!m.ui.isNullOrBlank()) {
+                    flush()
+                    out.add(ChatItem.Ui(m.ui))
                 } else {
                     buf.add(m)
                 }

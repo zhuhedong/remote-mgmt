@@ -262,8 +262,10 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
 
     fun updateInput(s: String) = set { it.copy(input = s) }
 
-    fun send() {
-        val text = _ui.value.input.trim()
+    /** Send the composer text, or [override] (e.g. a dsh-ui [genui-action]) without touching the draft. */
+    fun send(override: String? = null) {
+        val fromComposer = override == null
+        val text = (override ?: _ui.value.input).trim()
         if (text.isEmpty() || _ui.value.sending) return
         viewModelScope.launch {
             set { it.copy(sending = true, error = null) }
@@ -297,16 +299,16 @@ class ChatViewModel(private val hub: HubRepository) : ViewModel() {
                 _ui.value.model?.let { m -> call("models.select", JSONObject().put("sessionId", sid).put("provider", m.provider).put("model", m.model)) }
                 refreshSessions()
             }
-            val picked = _ui.value.selectedSkills
+            val picked = if (fromComposer) _ui.value.selectedSkills else emptyList()
             val shown = if (picked.isEmpty()) text else picked.joinToString(" ") { "/" + it.name } + " " + text
             val optimistic = ChatMsg(Long.MAX_VALUE, "user", shown)
-            set { it.copy(input = "", messages = it.messages + optimistic, running = true, selectedSkills = emptyList()) }
+            set { if (fromComposer) it.copy(input = "", messages = it.messages + optimistic, running = true, selectedSkills = emptyList()) else it.copy(messages = it.messages + optimistic, running = true) }
             val p = JSONObject().put("sessionId", sid).put("text", text)
             if (picked.isNotEmpty()) p.put("skills", org.json.JSONArray(picked.map { it.name }))
             val r = call("chat.prompt", p)
-            if (noteAuth(r)) { set { it.copy(sending = false, running = false, input = text, selectedSkills = picked, messages = it.messages - optimistic) }; return@launch }
+            if (noteAuth(r)) { set { if (fromComposer) it.copy(sending = false, running = false, input = text, selectedSkills = picked, messages = it.messages - optimistic) else it.copy(sending = false, running = false, messages = it.messages - optimistic) }; return@launch }
             set { it.copy(sending = false, error = if (r.ok) null else errText(r), running = r.ok) }
-            if (!r.ok) set { it.copy(input = text, selectedSkills = picked, messages = it.messages - optimistic) }
+            if (!r.ok) set { if (fromComposer) it.copy(input = text, selectedSkills = picked, messages = it.messages - optimistic) else it.copy(messages = it.messages - optimistic) }
             refreshSessions()
         }
     }

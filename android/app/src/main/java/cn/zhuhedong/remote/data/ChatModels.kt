@@ -36,6 +36,7 @@ data class ChatMsg(
     val name: String? = null,
     val callId: String? = null,
     val ask: AskPayload? = null,
+    val ui: String? = null, // render_ui spec JSON (agent >= 0.2.7)
 )
 
 data class ModelOption(val provider: String, val providerName: String, val id: String, val name: String)
@@ -102,6 +103,11 @@ object ChatParse {
             name = str(o["name"]),
             callId = str(o["callId"]),
             ask = askPayload(o["ask"]),
+            ui = when (val u = o["ui"]) {
+                is String -> u.takeIf { it.isNotBlank() }
+                is Map<*, *> -> runCatching { org.json.JSONObject(u).toString() }.getOrNull()
+                else -> null
+            },
         )
     }
 

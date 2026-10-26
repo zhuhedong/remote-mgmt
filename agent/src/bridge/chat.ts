@@ -233,6 +233,7 @@ export function applyEvent(msgs: ChatMessage[], ev: any): boolean {
         text: ask ? (ask.questions[0]?.header || ask.questions[0]?.question || name) : name,
         name, status: "running", callId, time,
         ...(ask ? { ask } : {}),
+        ...(name === "render_ui" ? renderUiSpec(d.arguments ?? d.input ?? d.params) : {}),
       });
       return true;
     }
@@ -933,4 +934,19 @@ function reqSession(params: Record<string, unknown>): string {
   const s = params.sessionId;
   if (typeof s !== "string" || !s || s.length > 200) fail("VALIDATION", "sessionId required");
   return s;
+}
+
+/** GenUI `render_ui` tool: expose the spec so the phone can draw the card natively. */
+function renderUiSpec(args: unknown): { ui?: string } {
+  try {
+    let a: any = typeof args === "string" ? JSON.parse(args) : args;
+    if (!a || typeof a !== "object") return {};
+    let spec: any = a.spec ?? a.ui ?? a;
+    if (typeof spec === "string") spec = JSON.parse(spec);
+    if (!spec || typeof spec !== "object") return {};
+    const json = JSON.stringify(spec);
+    return json.length > 200_000 ? {} : { ui: json };
+  } catch {
+    return {};
+  }
 }

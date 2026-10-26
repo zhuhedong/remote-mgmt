@@ -382,7 +382,11 @@ private fun ChatPane(vm: ChatViewModel, ui: ChatUiState, onMenu: () -> Unit, onN
                     else if (!ui.hasMoreOlder && chatItems.isNotEmpty()) Text("没有更早的消息了", color = Muted, fontSize = 12.sp, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     else Spacer(Modifier.height(4.dp))
                 }
-                items(chatItems) { ChatItemView(it, ui.running, ui.answeringAsk) { callId, answers, customs -> vm.answerAsk(callId, answers, customs) } }
+                items(chatItems) {
+                    cn.zhuhedong.remote.ui.genui.ProvideGenUiAction({ a, payload -> vm.send(cn.zhuhedong.remote.ui.genui.genUiActionMessage(a, payload)) }) {
+                        ChatItemView(it, ui.running, ui.answeringAsk) { callId, answers, customs -> vm.answerAsk(callId, answers, customs) }
+                    }
+                }
                 if (ui.running && ui.live.isBlank() && chatItems.lastOrNull() !is ChatItem.Steps && chatItems.none { it is ChatItem.Ask && !it.answered }) item { InProgress("进行中") }
                 item { Spacer(Modifier.height(8.dp)) }
             }
@@ -422,6 +426,7 @@ private fun ChatItemView(
         }
         is ChatItem.Assistant -> MarkdownText(item.text)
         is ChatItem.Steps -> StepsCard(item.steps, running && item.running)
+        is ChatItem.Ui -> cn.zhuhedong.remote.ui.genui.GenUiBlock(item.json)
         is ChatItem.Ask -> AskCard(item.ask, answered = item.answered, busy = answering, onSubmit = onAnswer)
     }
 }
@@ -677,6 +682,7 @@ fun MarkdownText(text: String) {
                     }
                 }
                 is MdBlock.Table -> MdTable(b.headers, b.rows)
+                is MdBlock.GenUi -> cn.zhuhedong.remote.ui.genui.GenUiBlock(b.json, b.closed)
                 is MdBlock.Hr -> HorizontalDivider(
                     color = border,
                     thickness = 1.dp,
